@@ -1538,6 +1538,15 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     Usa bounding_box() do iframe locator + posições percentuais (_CARD_PCT)
     para calcular coordenadas absolutas na página.
     """
+    try:
+        import ctypes, random as _rnd
+        _u32 = ctypes.windll.user32
+        _sw  = _u32.GetSystemMetrics(0) or 1920
+        _sh  = _u32.GetSystemMetrics(1) or 1080
+        _u32.SetCursorPos(_rnd.randint(100, _sw - 100), _rnd.randint(100, _sh - 100))
+    except Exception:
+        pass
+
     iframe_loc = _get_challenge_element_locator(page)
     try:
         box = iframe_loc.bounding_box()
@@ -1561,11 +1570,6 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     )
 
     try:
-        import ctypes, random as _rnd
-        _u32 = ctypes.windll.user32
-        _sw  = _u32.GetSystemMetrics(0) or 1920
-        _sh  = _u32.GetSystemMetrics(1) or 1080
-        _u32.SetCursorPos(_rnd.randint(100, _sw - 100), _rnd.randint(100, _sh - 100))
         page.mouse.click(click_x, click_y)
         return True
     except Exception as e:

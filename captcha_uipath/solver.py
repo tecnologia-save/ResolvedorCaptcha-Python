@@ -1039,6 +1039,7 @@ def _click_grade_tiles(page, indices: list[int]) -> None:
     """Clica nos tiles por índice 0-8 diretamente no DOM do frame ativo."""
     if not indices:
         return
+    _mover_cursor_suave(1)
     cf = _get_challenge_frame_locator(page)
     tasks = cf.locator(TASK_SEL)
     for idx in sorted(set(indices)):
@@ -1110,6 +1111,7 @@ def _click_fused_grade_tiles(page, indices: list[int],
     tile_w = grid_bbox["width"]  / 3
     tile_h = grid_bbox["height"] / 3
 
+    _mover_cursor_suave(1)
     for idx in sorted(set(indices)):
         row = idx // 3
         col = idx % 3
@@ -1127,6 +1129,7 @@ def _click_grid_positions(page, positions: list[dict], bbox: dict) -> None:
     """Converte col/row → pixels viewport e clica."""
     if not positions:
         return
+    _mover_cursor_suave(1)
     cw = bbox["width"]  / GRID_COLS
     ch = bbox["height"] / GRID_ROWS
     for pos in positions:

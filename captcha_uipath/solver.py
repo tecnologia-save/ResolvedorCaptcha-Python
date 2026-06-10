@@ -1561,6 +1561,12 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     )
 
     try:
+        import random as _rnd
+        vp = page.viewport_size or {"width": 1280, "height": 720}
+        page.mouse.move(
+            _rnd.randint(80, vp["width"] - 80),
+            _rnd.randint(80, vp["height"] - 80),
+        )
         page.mouse.click(click_x, click_y)
         return True
     except Exception as e:

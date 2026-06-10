@@ -1,0 +1,4 @@
+# Dependências de runtime do captcha_uipath
+google-genai>=1.0.0      # Cliente do Gemini (response_schema + thinking)
+Pillow>=10.0.0           # Overlay dos grids (3x3 e 20x20) sobre os screenshots
+playwright>=1.40.0       # Fornece o objeto `page` controlado pela automação

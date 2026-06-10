@@ -1,0 +1,29 @@
+# Artefatos de build
+build/
+dist/
+*.egg-info/
+*.egg
+
+# Cache Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Ambientes virtuais
+.venv/
+venv/
+env/
+ENV/
+
+# Screenshots de depuração gerados em runtime
+captcha_uipath/debug_screenshots/*.png
+
+# Segredos / configuração local
+.env
+*.key
+
+# IDE / SO
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

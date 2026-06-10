@@ -1531,6 +1531,36 @@ def _centros_cartas_dom(page) -> Optional[list]:
     return None
 
 
+def _mover_cursor_suave(n_movimentos: int = 2) -> None:
+    """Move o cursor do OS de forma suave (N trajetórias), simulando movimento humano."""
+    try:
+        import ctypes, random as _rnd, time as _t
+        _u32 = ctypes.windll.user32
+
+        class _PT(ctypes.Structure):
+            _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+        _sw = _u32.GetSystemMetrics(0) or 1920
+        _sh = _u32.GetSystemMetrics(1) or 1080
+
+        pt = _PT()
+        _u32.GetCursorPos(ctypes.byref(pt))
+        x, y = pt.x, pt.y
+
+        for _ in range(n_movimentos):
+            tx = _rnd.randint(150, _sw - 150)
+            ty = _rnd.randint(150, _sh - 150)
+            steps = _rnd.randint(18, 28)
+            for i in range(1, steps + 1):
+                nx = int(x + (tx - x) * i / steps)
+                ny = int(y + (ty - y) * i / steps)
+                _u32.SetCursorPos(nx, ny)
+                _t.sleep(_rnd.uniform(0.008, 0.018))
+            x, y = tx, ty
+    except Exception:
+        pass
+
+
 def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     """Clica na carta idx_alvo usando page.mouse.click() com coordenadas absolutas.
 
@@ -1538,14 +1568,7 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     Usa bounding_box() do iframe locator + posições percentuais (_CARD_PCT)
     para calcular coordenadas absolutas na página.
     """
-    try:
-        import ctypes, random as _rnd
-        _u32 = ctypes.windll.user32
-        _sw  = _u32.GetSystemMetrics(0) or 1920
-        _sh  = _u32.GetSystemMetrics(1) or 1080
-        _u32.SetCursorPos(_rnd.randint(100, _sw - 100), _rnd.randint(100, _sh - 100))
-    except Exception:
-        pass
+    _mover_cursor_suave(n_movimentos=2)
 
     iframe_loc = _get_challenge_element_locator(page)
     try:

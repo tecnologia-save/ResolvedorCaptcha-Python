@@ -1039,7 +1039,6 @@ def _click_grade_tiles(page, indices: list[int]) -> None:
     """Clica nos tiles por índice 0-8 diretamente no DOM do frame ativo."""
     if not indices:
         return
-    _mover_cursor_suave(1)
     cf = _get_challenge_frame_locator(page)
     tasks = cf.locator(TASK_SEL)
     for idx in sorted(set(indices)):

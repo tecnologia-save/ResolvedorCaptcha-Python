@@ -36,10 +36,15 @@ except ImportError:
 # Constantes
 # ──────────────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL      = "gemini-2.5-flash"
-GRID_COLS         = 20
-GRID_ROWS         = 20
-MAX_GEMINI_TRIES  = 5
+GEMINI_MODEL           = "gemini-2.5-flash"
+# Modelos tentados em ordem: se o principal estiver sobrecarregado (503/UNAVAILABLE),
+# a chamada cai para o próximo. Modelos diferentes têm pools de capacidade separados
+# no Google, então o fallback costuma resolver picos de demanda momentâneos.
+GEMINI_MODELS          = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+GRID_COLS              = 20
+GRID_ROWS              = 20
+MAX_GEMINI_TRIES       = 5    # tentativas nos loops de alto nível (screenshot/semântica)
+GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (troca rápido)
 
 CHECKBOX_SEL   = "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
 CHALLENGE_SEL  = "iframe[src*='hcaptcha.com'][src*='frame=challenge']"
@@ -365,23 +370,72 @@ def _get_client(api_key: str):
     return _client_cache
 
 
-def _make_config(schema: dict):
-    """GenerateContentConfig com response_schema + thinking (4096 tokens)."""
+def _make_config(schema: dict, model: str = GEMINI_MODEL):
+    """GenerateContentConfig com response_schema + thinking (4096 tokens).
+
+    O thinking_budget só é habilitado nos modelos 2.5 (o 2.0-flash usado como
+    fallback não suporta e recusaria a requisição).
+    """
     kwargs: dict = {
         "temperature": 0.0,
         "response_mime_type": "application/json",
         "response_schema": schema,
     }
-    try:
-        kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=4096)
-    except Exception:
-        pass
+    if "2.5" in model:
+        try:
+            kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=4096)
+        except Exception:
+            pass
     try:
         return _gt.GenerateContentConfig(**kwargs)
     except Exception:
         # Fallback sem thinking se a versão instalada não suportar
         kwargs_safe = {k: v for k, v in kwargs.items() if k != "thinking_config"}
         return _gt.GenerateContentConfig(**kwargs_safe)
+
+
+def _is_overloaded_error(e) -> bool:
+    """True se o erro do Gemini indica sobrecarga/indisponibilidade transitória
+    (503/UNAVAILABLE/overloaded/429/RESOURCE_EXHAUSTED) — casos em que trocar de
+    modelo costuma resolver."""
+    s = str(e or "").lower()
+    return any(k in s for k in (
+        "503", "unavailable", "overloaded", "high demand",
+        "429", "resource_exhausted", "rate limit",
+    ))
+
+
+def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
+    """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
+
+    Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
+    curto. Se o modelo estiver indisponível (503/sobrecarga), passa para o próximo da
+    lista. Retorna o JSON já parseado; levanta RuntimeError se todos falharem.
+    """
+    client = _get_client(api_key)
+    last_exc = None
+    for mi, model in enumerate(GEMINI_MODELS):
+        for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
+            try:
+                resp = client.models.generate_content(
+                    model=model,
+                    contents=contents,
+                    config=_make_config(schema, model),
+                )
+                if mi > 0:
+                    print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
+                return json.loads(resp.text)
+            except Exception as e:
+                last_exc = e
+                print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {e}")
+                if attempt < GEMINI_TRIES_PER_MODEL:
+                    time.sleep(min(2 ** attempt, 8))
+        # Esgotou as tentativas neste modelo.
+        if not _is_overloaded_error(last_exc):
+            break  # erro não é de sobrecarga — trocar de modelo não ajuda
+        if mi < len(GEMINI_MODELS) - 1:
+            print(f"    [captcha/{tag}] '{model}' indisponível (sobrecarga) — tentando modelo alternativo...")
+    raise RuntimeError(f"Gemini {tag}: falhou em todos os modelos. Ultimo erro: {last_exc}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -899,7 +953,6 @@ def _overlay_3x3_grid(png: bytes) -> bytes:
 
 def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
-    client = _get_client(api_key)
     if ref_img:
         contents = [
             _gt.Part.from_bytes(data=png,     mime_type="image/png"),
@@ -911,19 +964,7 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
             _gt.Part.from_bytes(data=png, mime_type="image/png"),
             _PROMPT_GRADE,
         ]
-    for attempt in range(1, MAX_GEMINI_TRIES + 1):
-        try:
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=_make_config(_SCHEMA_GRADE),
-            )
-            return json.loads(resp.text)
-        except Exception as e:
-            print(f"    [captcha/grade] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
-                time.sleep(min(2 ** attempt, 30))
-    raise RuntimeError("Gemini grade: todas as tentativas falharam.")
+    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade")
 
 
 _PROMPT_GRADE_FUSED = """\
@@ -981,30 +1022,16 @@ Em caso de duvida razoavel: INCLUA o tile.
 
 def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str) -> dict:
     """Grade fused: envia iframe completo (contexto) + tiles recortados com overlay 3x3 → Gemini."""
-    client = _get_client(api_key)
     contents = [
         _gt.Part.from_bytes(data=iframe_png, mime_type="image/png"),
         _gt.Part.from_bytes(data=tiles_png,  mime_type="image/png"),
         _PROMPT_GRADE_FUSED,
     ]
-    for attempt in range(1, MAX_GEMINI_TRIES + 1):
-        try:
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=_make_config(_SCHEMA_GRADE),
-            )
-            return json.loads(resp.text)
-        except Exception as e:
-            print(f"    [captcha/grade_fused] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
-                time.sleep(min(2 ** attempt, 30))
-    raise RuntimeError("Gemini grade_fused: todas as tentativas falharam.")
+    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade_fused")
 
 
 def _gemini_grid(png: bytes, instrucao: str, api_key: str) -> dict:
     """Imagem+grid → Gemini → {instruction, action, click_positions, confidence}."""
-    client = _get_client(api_key)
     prompt = _PROMPT_GRID_TMPL.format(
         cols=GRID_COLS,
         rows=GRID_ROWS,
@@ -1016,19 +1043,7 @@ def _gemini_grid(png: bytes, instrucao: str, api_key: str) -> dict:
         _gt.Part.from_bytes(data=png, mime_type="image/png"),
         prompt,
     ]
-    for attempt in range(1, MAX_GEMINI_TRIES + 1):
-        try:
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=_make_config(_SCHEMA_GRID),
-            )
-            return json.loads(resp.text)
-        except Exception as e:
-            print(f"    [captcha/grid] Gemini tentativa {attempt}/{MAX_GEMINI_TRIES}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
-                time.sleep(min(2 ** attempt, 30))
-    raise RuntimeError("Gemini grid: todas as tentativas falharam.")
+    return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1375,8 +1390,6 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
     Envia até 20 frames ao Gemini com prompt que explica a animação sequencial.
     Returns -1 se não for possível identificar.
     """
-    client = _get_client(api_key)
-
     # Seleciona no máximo 20 frames igualmente espaçados
     if len(frames) > 20:
         step = len(frames) / 20
@@ -1403,39 +1416,34 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
 
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
-            resp = client.models.generate_content(
-                model=GEMINI_MODEL,
-                contents=contents,
-                config=_make_config(_SCHEMA_CARTAO_ANIMAL),
-            )
-            result = json.loads(resp.text)
-            idx_dif = result.get("indice_diferente")
-            confianca = result.get("confidence", "low")
-
-            if idx_dif is None or not (0 <= int(idx_dif) <= 3):
-                print(f"    [captcha/cartao] Gemini: índice inválido {idx_dif} — tentativa {attempt}.")
-                time.sleep(1)
-                continue
-
-            idx_dif = int(idx_dif)
-            animais = [result.get(f"carta_{i}", "?") for i in range(4)]
-            print(
-                f"    [captcha/cartao] Carta diferente: idx={idx_dif} | "
-                f"animais={animais} | confidence={confianca} | "
-                f"{result.get('justificativa', '')[:80]}"
-            )
-
-            if confianca == "low":
-                print(f"    [captcha/cartao] Confiança baixa — tentativa {attempt}.")
-                time.sleep(1)
-                continue
-
-            return idx_dif
-
+            # _gemini_call já tenta todos os modelos (fallback em sobrecarga 503).
+            result = _gemini_call(contents, _SCHEMA_CARTAO_ANIMAL, api_key, "cartao")
         except Exception as e:
             print(f"    [captcha/cartao] Gemini erro tentativa {attempt}: {e}")
-            if attempt < MAX_GEMINI_TRIES:
-                time.sleep(min(2 ** attempt, 10))
+            break  # todos os modelos falharam; repetir rápido não ajuda
+
+        idx_dif = result.get("indice_diferente")
+        confianca = result.get("confidence", "low")
+
+        if idx_dif is None or not (0 <= int(idx_dif) <= 3):
+            print(f"    [captcha/cartao] Gemini: índice inválido {idx_dif} — tentativa {attempt}.")
+            time.sleep(1)
+            continue
+
+        idx_dif = int(idx_dif)
+        animais = [result.get(f"carta_{i}", "?") for i in range(4)]
+        print(
+            f"    [captcha/cartao] Carta diferente: idx={idx_dif} | "
+            f"animais={animais} | confidence={confianca} | "
+            f"{result.get('justificativa', '')[:80]}"
+        )
+
+        if confianca == "low":
+            print(f"    [captcha/cartao] Confiança baixa — tentativa {attempt}.")
+            time.sleep(1)
+            continue
+
+        return idx_dif
 
     return -1
 

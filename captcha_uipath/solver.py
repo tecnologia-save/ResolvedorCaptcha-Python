@@ -427,7 +427,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
                 return json.loads(resp.text)
             except Exception as e:
                 last_exc = e
-                print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {e}")
+                print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {_limpar_texto(e, 300)}")
                 if attempt < GEMINI_TRIES_PER_MODEL:
                     time.sleep(min(2 ** attempt, 8))
         # Esgotou as tentativas neste modelo.
@@ -948,12 +948,75 @@ def _overlay_3x3_grid(png: bytes) -> bytes:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Redução de payload enviado ao Gemini
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _png_dims(png: bytes) -> tuple[int, int]:
+    """Retorna (largura, altura) do PNG sem depender do PIL (lê o header IHDR)."""
+    try:
+        if png and len(png) >= 24 and png[12:16] == b"IHDR":
+            w = int.from_bytes(png[16:20], "big")
+            h = int.from_bytes(png[20:24], "big")
+            return w, h
+    except Exception:
+        pass
+    return 0, 0
+
+
+def _shrink_png(png: bytes, max_dim: int = 900) -> bytes:
+    """Reduz o PNG para no máximo `max_dim` px no maior lado antes de enviar ao Gemini.
+
+    O Chrome abre maximizado (no_viewport) na resolução do monitor com o scaling do
+    Windows, então os screenshots do iframe do hCaptcha saem bem maiores do que o
+    necessário — e, se a detecção do iframe ativo cair no fallback, pode capturar um
+    iframe do tamanho do viewport quase todo em branco. Enviar essa imagem cheia
+    deixa a chamada ao Gemini lenta sem ganho de acurácia (o desafio é pequeno).
+    Mantém a proporção; se já couber, ou se o PIL não estiver disponível, devolve o
+    PNG original inalterado.
+
+    Seguro para os cliques: a matemática de clique usa a bounding box da PÁGINA
+    (não os pixels da imagem enviada), então reduzir a imagem não afeta as posições.
+    """
+    if not _PIL or not png:
+        return png
+    try:
+        img = Image.open(io.BytesIO(png))
+        w, h = img.size
+        if max(w, h) <= max_dim:
+            return png
+        scale = max_dim / max(w, h)
+        img = img.convert("RGB").resize(
+            (max(1, round(w * scale)), max(1, round(h * scale))), Image.LANCZOS
+        )
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        return buf.getvalue()
+    except Exception:
+        return png
+
+
+def _limpar_texto(valor, max_len: int = 200) -> str:
+    """Colapsa qualquer sequência de espaços/quebras de linha em um único espaço e
+    trunca o resultado.
+
+    Campos de texto livre devolvidos pelo Gemini (task_summary, instruction, etc.)
+    às vezes vêm degenerados — centenas de '\\n' — quando o modelo recebe uma imagem
+    ruim/enorme. Imprimir esse valor cru inunda o console com linhas em branco. Esta
+    função garante que qualquer print de texto do modelo caiba em uma única linha.
+    """
+    s = " ".join(str(valor or "").split())
+    return s if len(s) <= max_len else s[:max_len] + "…"
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Chamadas ao Gemini
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
+    png = _shrink_png(png)
     if ref_img:
+        ref_img = _shrink_png(ref_img, max_dim=512)
         contents = [
             _gt.Part.from_bytes(data=png,     mime_type="image/png"),
             _gt.Part.from_bytes(data=ref_img, mime_type="image/png"),
@@ -1022,6 +1085,8 @@ Em caso de duvida razoavel: INCLUA o tile.
 
 def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str) -> dict:
     """Grade fused: envia iframe completo (contexto) + tiles recortados com overlay 3x3 → Gemini."""
+    iframe_png = _shrink_png(iframe_png)
+    tiles_png  = _shrink_png(tiles_png)
     contents = [
         _gt.Part.from_bytes(data=iframe_png, mime_type="image/png"),
         _gt.Part.from_bytes(data=tiles_png,  mime_type="image/png"),
@@ -1687,6 +1752,11 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             iframe_loc = _get_challenge_element_locator(page)
             try:
                 png = iframe_loc.screenshot(timeout=8_000)
+                _pw, _ph = _png_dims(png)
+                print(
+                    f"    [captcha/grade] Screenshot capturado: "
+                    f"{_pw}x{_ph}px, {len(png) // 1024} KB"
+                )
             except Exception as e:
                 print(f"    [captcha/grade] Screenshot falhou (tentativa {attempt}): {type(e).__name__}")
                 # Se o iframe sumiu é porque o captcha foi resolvido
@@ -1699,7 +1769,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             try:
                 result = _gemini_grade(png, ref_img, api_key)
             except Exception as e:
-                print(f"    [captcha/grade] Gemini erro (tentativa {attempt}): {e}")
+                print(f"    [captcha/grade] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
                 time.sleep(1)
                 continue
 
@@ -1717,7 +1787,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             continue
 
         print(
-            f"    [captcha/grade] '{result.get('task_summary')}' "
+            f"    [captcha/grade] '{_limpar_texto(result.get('task_summary'))}' "
             f"| {result.get('confidence')} | tiles={valid_tiles}"
         )
         _click_grade_tiles(page, valid_tiles)
@@ -1836,7 +1906,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
                     ref_img = _get_reference_image_bytes(page)
                     result = _gemini_grade(iframe_png, ref_img, api_key)
             except Exception as e:
-                print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}): {e}")
+                print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
                 time.sleep(1)
                 continue
 
@@ -1854,7 +1924,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
             continue
 
         print(
-            f"    [captcha/grade_fused] '{result.get('task_summary')}' "
+            f"    [captcha/grade_fused] '{_limpar_texto(result.get('task_summary'))}' "
             f"| {result.get('confidence')} | tiles={valid_tiles}"
         )
 
@@ -1893,7 +1963,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
         print(f"    [captcha/imagem] Rodada {rnd}/{max_rounds}...")
 
         instrucao = _extrair_instrucao(page)
-        print(f"    [captcha/imagem] Instrução: '{instrucao}'")
+        print(f"    [captcha/imagem] Instrução: '{_limpar_texto(instrucao)}'")
 
         png_raw, area_bbox = _get_task_image_screenshot_and_bbox(page)
         if not png_raw:
@@ -1907,7 +1977,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
         try:
             result = _gemini_grid(png_grid, instrucao, api_key)
         except Exception as e:
-            print(f"    [captcha/imagem] Gemini falhou: {e}")
+            print(f"    [captcha/imagem] Gemini falhou: {_limpar_texto(e, 300)}")
             continue
 
         positions  = result.get("click_positions") or []

@@ -36,11 +36,14 @@ except ImportError:
 # Constantes
 # ──────────────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL           = "gemini-2.5-flash"
+GEMINI_MODEL           = "gemini-flash-lite-latest"
 # Modelos tentados em ordem: se o principal estiver sobrecarregado (503/UNAVAILABLE),
 # a chamada cai para o próximo. Modelos diferentes têm pools de capacidade separados
 # no Google, então o fallback costuma resolver picos de demanda momentâneos.
-GEMINI_MODELS          = ["gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.0-flash"]
+# Os modelos 2.x foram descontinuados para projetos/keys novos (404 "no longer
+# available to new users"); usamos os aliases "-latest" e a família 3.x, que
+# permanecem disponíveis e migram sozinhos conforme o Google atualiza.
+GEMINI_MODELS          = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]
 GRID_COLS              = 20
 GRID_ROWS              = 20
 MAX_GEMINI_TRIES       = 5    # tentativas nos loops de alto nível (screenshot/semântica)
@@ -373,15 +376,17 @@ def _get_client(api_key: str):
 def _make_config(schema: dict, model: str = GEMINI_MODEL):
     """GenerateContentConfig com response_schema + thinking (4096 tokens).
 
-    O thinking_budget só é habilitado nos modelos 2.5 (o 2.0-flash usado como
-    fallback não suporta e recusaria a requisição).
+    O thinking_budget é habilitado em todos os modelos usados atualmente
+    (flash-lite-latest, 3.1-flash-lite, flash-latest — todos suportam thinking).
+    Apenas os legados 2.0-flash não suportam e recusariam a requisição.
     """
     kwargs: dict = {
         "temperature": 0.0,
         "response_mime_type": "application/json",
         "response_schema": schema,
     }
-    if "2.5" in model:
+    _sem_thinking = ("2.0-flash",)
+    if not any(m in model for m in _sem_thinking):
         try:
             kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=4096)
         except Exception:

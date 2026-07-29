@@ -8,7 +8,8 @@ Combina o melhor de duas implementações:
   - Imagem de referência extraída separadamente para prompt mais específico
   - Submit com 5 estratégias em cascata (JS, frame.locator, frame_locator, coords, XPath)
   - google.genai SDK com response_schema → JSON sempre estruturado e válido
-  - Thinking habilitado (thinkingBudget=4096) para maior acurácia
+  - Thinking DESLIGADO por padrão (THINKING_BUDGET=0) para respostas rápidas;
+    reativável via env CAPTCHA_THINKING_BUDGET se precisar de mais acurácia
 """
 
 from __future__ import annotations
@@ -44,6 +45,18 @@ GEMINI_MODEL           = "gemini-flash-lite-latest"
 # available to new users"); usamos os aliases "-latest" e a família 3.x, que
 # permanecem disponíveis e migram sozinhos conforme o Google atualiza.
 GEMINI_MODELS          = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+
+# "Thinking" (raciocínio interno do Gemini antes de responder) custa VÁRIOS
+# segundos por chamada — era a maior fonte de lentidão do resolvedor. Para
+# classificar imagem de captcha não compensa: o modelo flash-lite responde bem
+# direto, e o loop de retentativas cobre eventuais erros. Por isso vem DESLIGADO
+# por padrão (0). Pode ser reativado sem recompilar via CAPTCHA_THINKING_BUDGET
+# no ambiente (ex.: 1024) caso queira trocar velocidade por acurácia.
+try:
+    THINKING_BUDGET = max(0, int(os.getenv("CAPTCHA_THINKING_BUDGET", "0") or "0"))
+except (ValueError, TypeError):
+    THINKING_BUDGET = 0
+
 GRID_COLS              = 20
 GRID_ROWS              = 20
 MAX_GEMINI_TRIES       = 5    # tentativas nos loops de alto nível (screenshot/semântica)
@@ -374,11 +387,12 @@ def _get_client(api_key: str):
 
 
 def _make_config(schema: dict, model: str = GEMINI_MODEL):
-    """GenerateContentConfig com response_schema + thinking (4096 tokens).
+    """GenerateContentConfig com response_schema e thinking conforme THINKING_BUDGET.
 
-    O thinking_budget é habilitado em todos os modelos usados atualmente
-    (flash-lite-latest, 3.1-flash-lite, flash-latest — todos suportam thinking).
-    Apenas os legados 2.0-flash não suportam e recusariam a requisição.
+    Por padrão THINKING_BUDGET=0 (thinking DESLIGADO) para respostas rápidas —
+    passamos thinking_budget=0 explicitamente para forçar o desligamento nos
+    modelos que suportam thinking (flash-lite-latest etc.). Os legados 2.0-flash
+    não aceitam thinking_config, por isso são excluídos.
     """
     kwargs: dict = {
         "temperature": 0.0,
@@ -388,7 +402,7 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL):
     _sem_thinking = ("2.0-flash",)
     if not any(m in model for m in _sem_thinking):
         try:
-            kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=4096)
+            kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=THINKING_BUDGET)
         except Exception:
             pass
     try:
@@ -556,7 +570,7 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000) -> str:
         return "nenhum"
 
     try:
-        page.wait_for_timeout(1200)  # aguarda conteúdo do iframe carregar
+        page.wait_for_timeout(500)  # aguarda conteúdo do iframe começar a carregar
 
         # Polling até 2s extra para tiles carregarem (resolve timing em grades lentas)
         count = 0
@@ -1326,7 +1340,7 @@ def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
             cf = page.frame_locator(CHECKBOX_SEL)
             cf.locator("#checkbox").first.click(timeout=3_000)
             print(f"    [captcha] Checkbox clicado (tentativa {tentativa}/3).")
-            page.wait_for_timeout(2_000)
+            page.wait_for_timeout(1_000)
             return True
         except Exception as e:
             print(f"    [captcha] Checkbox tentativa {tentativa}/3: {e}")
@@ -2060,7 +2074,9 @@ def solve_hcaptcha(page, max_rounds: int = 6) -> bool:
             print(f"    [captcha] Iteração {rnd}: solver não resolveu. Próxima tentativa...")
             continue
 
-        page.wait_for_timeout(1_500)
+        # Os solvers já fazem _wait_for_resolve (polling) antes de retornar True,
+        # então aqui basta uma folga curta antes de reconfirmar.
+        page.wait_for_timeout(500)
         if not _challenge_visible(page):
             print(f"    [captcha] Captcha resolvido na iteração {rnd}!")
             return True

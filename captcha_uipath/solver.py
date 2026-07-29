@@ -8,8 +8,9 @@ Combina o melhor de duas implementações:
   - Imagem de referência extraída separadamente para prompt mais específico
   - Submit com 5 estratégias em cascata (JS, frame.locator, frame_locator, coords, XPath)
   - google.genai SDK com response_schema → JSON sempre estruturado e válido
-  - Thinking DESLIGADO por padrão (THINKING_BUDGET=0) para respostas rápidas;
-    reativável via env CAPTCHA_THINKING_BUDGET se precisar de mais acurácia
+  - Thinking LIGADO por padrão (THINKING_BUDGET=4096) — acurácia é o que resolve
+    o captcha rápido (evita o loop de retentativas por "confiança baixa");
+    ajustável via env CAPTCHA_THINKING_BUDGET
 """
 
 from __future__ import annotations
@@ -46,19 +47,21 @@ GEMINI_MODEL           = "gemini-flash-lite-latest"
 # permanecem disponíveis e migram sozinhos conforme o Google atualiza.
 GEMINI_MODELS          = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]
 
-# "Thinking" (raciocínio interno do Gemini antes de responder) custa VÁRIOS
-# segundos por chamada — era a maior fonte de lentidão do resolvedor. Para
-# classificar imagem de captcha não compensa: o modelo flash-lite responde bem
-# direto, e o loop de retentativas cobre eventuais erros.
-#   0 (padrão) = NÃO envia thinking_config → o modelo usa o default (raciocínio
-#               mínimo, rápido). NÃO enviamos "0" explicitamente: estes modelos
-#               respondem 400 INVALID_ARGUMENT ao receber thinking_budget=0.
-#   >0         = envia esse orçamento (ex.: 1024/4096) — mais lento, mais acurado.
-# Ajustável sem recompilar via CAPTCHA_THINKING_BUDGET no ambiente.
+# "Thinking" (raciocínio interno do Gemini antes de responder). Para captcha,
+# ACURÁCIA É VELOCIDADE: com thinking o modelo acerta os tiles em 1-2 tentativas;
+# SEM thinking ele responde "confiança baixa" e o solver entra em loop de
+# retentativas que nunca resolve — ou seja, fica MAIS lento e ainda falha.
+# Por isso o padrão é um orçamento POSITIVO (4096, valor comprovado).
+#   >0 (padrão) = envia esse orçamento de thinking (acurado).
+#   0           = NÃO envia thinking_config → modelo usa o default (rápido, mas
+#                 impreciso em captcha). Nunca enviamos "0" explícito: estes
+#                 modelos respondem 400 INVALID_ARGUMENT ao receber budget=0.
+# Ajustável sem recompilar via CAPTCHA_THINKING_BUDGET no ambiente (ex.: 2048
+# para tentar acelerar um pouco, à custa de possível queda de acurácia).
 try:
-    THINKING_BUDGET = max(0, int(os.getenv("CAPTCHA_THINKING_BUDGET", "0") or "0"))
+    THINKING_BUDGET = max(0, int(os.getenv("CAPTCHA_THINKING_BUDGET", "4096") or "4096"))
 except (ValueError, TypeError):
-    THINKING_BUDGET = 0
+    THINKING_BUDGET = 4096
 
 GRID_COLS              = 20
 GRID_ROWS              = 20

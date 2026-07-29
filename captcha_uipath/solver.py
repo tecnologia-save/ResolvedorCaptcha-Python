@@ -49,9 +49,12 @@ GEMINI_MODELS          = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "
 # "Thinking" (raciocínio interno do Gemini antes de responder) custa VÁRIOS
 # segundos por chamada — era a maior fonte de lentidão do resolvedor. Para
 # classificar imagem de captcha não compensa: o modelo flash-lite responde bem
-# direto, e o loop de retentativas cobre eventuais erros. Por isso vem DESLIGADO
-# por padrão (0). Pode ser reativado sem recompilar via CAPTCHA_THINKING_BUDGET
-# no ambiente (ex.: 1024) caso queira trocar velocidade por acurácia.
+# direto, e o loop de retentativas cobre eventuais erros.
+#   0 (padrão) = NÃO envia thinking_config → o modelo usa o default (raciocínio
+#               mínimo, rápido). NÃO enviamos "0" explicitamente: estes modelos
+#               respondem 400 INVALID_ARGUMENT ao receber thinking_budget=0.
+#   >0         = envia esse orçamento (ex.: 1024/4096) — mais lento, mais acurado.
+# Ajustável sem recompilar via CAPTCHA_THINKING_BUDGET no ambiente.
 try:
     THINKING_BUDGET = max(0, int(os.getenv("CAPTCHA_THINKING_BUDGET", "0") or "0"))
 except (ValueError, TypeError):
@@ -389,10 +392,15 @@ def _get_client(api_key: str):
 def _make_config(schema: dict, model: str = GEMINI_MODEL):
     """GenerateContentConfig com response_schema e thinking conforme THINKING_BUDGET.
 
-    Por padrão THINKING_BUDGET=0 (thinking DESLIGADO) para respostas rápidas —
-    passamos thinking_budget=0 explicitamente para forçar o desligamento nos
-    modelos que suportam thinking (flash-lite-latest etc.). Os legados 2.0-flash
-    não aceitam thinking_config, por isso são excluídos.
+    THINKING_BUDGET == 0 (padrão): NÃO enviamos thinking_config — o modelo usa seu
+    default, que para os flash-lite é um raciocínio mínimo (rápido). Isso é o que
+    dá agilidade SEM quebrar a chamada. IMPORTANTE: mandar thinking_budget=0
+    explicitamente faz estes modelos (flash-lite-latest / 3.x) responderem
+    400 INVALID_ARGUMENT — eles aceitam um budget POSITIVO (ex.: 4096) ou nenhum,
+    mas não o valor 0. Por isso o 0 vira "omitir", nunca "enviar 0".
+
+    THINKING_BUDGET > 0: envia thinking_config com esse orçamento (troca
+    velocidade por acurácia). Os legados 2.0-flash não aceitam thinking_config.
     """
     kwargs: dict = {
         "temperature": 0.0,
@@ -400,7 +408,7 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL):
         "response_schema": schema,
     }
     _sem_thinking = ("2.0-flash",)
-    if not any(m in model for m in _sem_thinking):
+    if THINKING_BUDGET > 0 and not any(m in model for m in _sem_thinking):
         try:
             kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=THINKING_BUDGET)
         except Exception:

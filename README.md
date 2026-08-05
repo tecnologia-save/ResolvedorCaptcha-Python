@@ -1,4 +1,4 @@
-# CaptchaSolver (`captcha_uipath`)
+# ResolvedorCaptcha (`resolvedor_captcha`)
 
 Resolvedor automático de **hCaptcha** em Python, projetado para automações com
 **Playwright** e integração com **UiPath**. O pacote recebe uma página
@@ -167,7 +167,7 @@ sua automação já controla. Exemplo mínimo:
 ```python
 import os
 from playwright.sync_api import sync_playwright
-from captcha_uipath import solve_hcaptcha
+from resolvedor_captcha import solve_hcaptcha
 
 os.environ["GEMINI_API_KEY"] = "sua-chave-aqui"
 
@@ -189,17 +189,17 @@ with sync_playwright() as p:
 
 Em um workflow UiPath com a atividade *Invoke Python Method* (ou *Python Scope*),
 passe a referência da `page` do Playwright já instanciado e chame
-`solve_hcaptcha`. O pacote foi empacotado (`captcha_uipath`) justamente para ser
+`solve_hcaptcha`. O pacote foi empacotado (`resolvedor_captcha`) justamente para ser
 importável como dependência do ambiente Python configurado no UiPath.
 
 ---
 
 ## API pública
 
-Exportada em [`captcha_uipath/__init__.py`](captcha_uipath/__init__.py):
+Exportada em [`resolvedor_captcha/__init__.py`](resolvedor_captcha/__init__.py):
 
 ```python
-from captcha_uipath import solve_hcaptcha, solve_captcha, cell_to_viewport
+from resolvedor_captcha import solve_hcaptcha, solve_captcha, cell_to_viewport
 ```
 
 | Função | Assinatura | Descrição |
@@ -213,7 +213,7 @@ from captcha_uipath import solve_hcaptcha, solve_captcha, cell_to_viewport
 ## Depuração
 
 Cada screenshot enviado ao Gemini é salvo em
-[`captcha_uipath/debug_screenshots/`](captcha_uipath/debug_screenshots/) com um
+[`resolvedor_captcha/debug_screenshots/`](resolvedor_captcha/debug_screenshots/) com um
 contador sequencial e um sufixo descritivo (ex.: `007_cartao_frame07.png`). Isso
 permite inspecionar visualmente exatamente o que o modelo recebeu em cada etapa.
 
@@ -229,12 +229,12 @@ detectado, os tiles escolhidos e qual estratégia de envio funcionou.
 ## Estrutura do projeto
 
 ```
-CaptchaSolver/
+ResolvedorCaptcha/
 ├── README.md
 ├── requirements.txt
-├── setup.py                      # Empacotamento (captcha_uipath, v1.0.0)
+├── setup.py                      # Empacotamento (resolvedor_captcha, v1.0.0)
 ├── .gitignore
-└── captcha_uipath/
+└── resolvedor_captcha/
     ├── __init__.py               # API pública
     ├── solver.py                 # Toda a lógica de resolução
     ├── prompt.md                 # Prompt de referência (sistema de grade A1/B2)
@@ -246,7 +246,7 @@ CaptchaSolver/
 ## Limitações e notas
 
 - **Dependente de modelo visual** — a acurácia depende do Gemini 2.5 Flash; o
-  modelo é configurado em `GEMINI_MODEL` no [solver.py](captcha_uipath/solver.py).
+  modelo é configurado em `GEMINI_MODEL` no [solver.py](resolvedor_captcha/solver.py).
 - **Custo de API** — cada rodada faz uma ou mais chamadas ao Gemini (com até 5
   retentativas). Desafios encadeados consomem múltiplas chamadas.
 - **Sensível a layout** — seletores CSS e posições percentuais (ex.: `_CARD_PCT`
@@ -259,4 +259,4 @@ CaptchaSolver/
 
 ---
 
-**Versão:** 1.0.0 · **Python:** ≥ 3.10 · **Pacote:** `captcha_uipath`
+**Versão:** 1.0.0 · **Python:** ≥ 3.10 · **Pacote:** `resolvedor_captcha`

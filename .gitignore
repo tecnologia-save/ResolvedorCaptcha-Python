@@ -16,7 +16,7 @@ env/
 ENV/
 
 # Screenshots de depuração gerados em runtime
-captcha_uipath/debug_screenshots/*.png
+resolvedor_captcha/debug_screenshots/*.png
 
 # Segredos / configuração local
 .env

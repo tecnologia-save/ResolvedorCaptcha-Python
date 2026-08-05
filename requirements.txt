@@ -1,4 +1,6 @@
 # Dependências de runtime do resolvedor_captcha
 google-genai>=1.0.0      # Cliente do Gemini (response_schema + thinking)
 Pillow>=10.0.0           # Overlay dos grids (3x3 e 20x20) sobre os screenshots
-playwright>=1.40.0       # Fornece o objeto `page` controlado pela automação
+# playwright NAO e dependencia do pacote: o objeto `page` e passado pelo chamador,
+# e as automacoes desta pasta usam patchright (fork). Instale um dos dois no projeto
+# que consome, nunca aqui.

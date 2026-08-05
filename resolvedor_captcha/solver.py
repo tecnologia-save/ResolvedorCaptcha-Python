@@ -38,14 +38,27 @@ except ImportError:
 # Constantes
 # ──────────────────────────────────────────────────────────────────────────────
 
-GEMINI_MODEL           = "gemini-flash-lite-latest"
-# Modelos tentados em ordem: se o principal estiver sobrecarregado (503/UNAVAILABLE),
-# a chamada cai para o próximo. Modelos diferentes têm pools de capacidade separados
-# no Google, então o fallback costuma resolver picos de demanda momentâneos.
-# Os modelos 2.x foram descontinuados para projetos/keys novos (404 "no longer
-# available to new users"); usamos os aliases "-latest" e a família 3.x, que
-# permanecem disponíveis e migram sozinhos conforme o Google atualiza.
-GEMINI_MODELS          = ["gemini-flash-lite-latest", "gemini-3.1-flash-lite", "gemini-flash-latest"]
+# Modelos tentados em ordem: se o principal estiver sobrecarregado (503/UNAVAILABLE)
+# ou indisponível (404), a chamada cai para o próximo. Modelos diferentes têm pools
+# de capacidade separados no Google, então o fallback resolve picos momentâneos.
+#
+# A ordem abaixo veio de medição na tarefa real do solver (grade 3x3 + response_schema,
+# thinking 4096): todos acertaram 3/3; o desempate foi latência média por chamada —
+# flash-latest 5.9s, 3.6-flash 7.3s, flash-lite-latest 10.2s, 3.1-flash-lite 11.8s,
+# 3.5-flash 21.3s, pro-latest 23.3s. O pro entra antes do lite porque é a carta de
+# maior acurácia quando os flash erram o desafio, não por velocidade.
+#
+# NÃO usar a família 2.x: gemini-2.0-flash e gemini-2.5-flash respondem 404
+# ("no longer available") para chaves novas. Os aliases "-latest" migram sozinhos
+# conforme o Google atualiza, então envelhecem melhor que IDs fixos.
+# Sobrescrevível por ambiente: GEMINI_MODELS="modelo1,modelo2,...".
+GEMINI_MODELS          = [m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()] or [
+    "gemini-flash-latest",    # primário: mais rápido dos aprovados, flash estável mais recente
+    "gemini-3.6-flash",       # fallback: flash novo explícito
+    "gemini-pro-latest",      # fallback: maior acurácia quando os flash falham
+    "gemini-3.1-flash-lite",  # último recurso: leve/barato, alta disponibilidade
+]
+GEMINI_MODEL           = GEMINI_MODELS[0]
 
 # "Thinking" (raciocínio interno do Gemini antes de responder). Para captcha,
 # ACURÁCIA É VELOCIDADE: com thinking o modelo acerta os tiles em 1-2 tentativas;
@@ -425,13 +438,20 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL):
 
 
 def _is_overloaded_error(e) -> bool:
-    """True se o erro do Gemini indica sobrecarga/indisponibilidade transitória
-    (503/UNAVAILABLE/overloaded/429/RESOURCE_EXHAUSTED) — casos em que trocar de
-    modelo costuma resolver."""
+    """True quando vale a pena TROCAR DE MODELO.
+
+    Dois casos distintos, ambos resolvidos pelo fallback:
+      - sobrecarga transitória: 503/UNAVAILABLE/overloaded/429/RESOURCE_EXHAUSTED
+      - modelo morto: 404 "no longer available" — o Google aposenta IDs fixos
+        (gemini-2.0-flash e gemini-2.5-flash já respondem 404 para chaves novas).
+        Sem o 404 aqui, um modelo aposentado derruba a resolução inteira em vez
+        de cair para o próximo da lista.
+    """
     s = str(e or "").lower()
     return any(k in s for k in (
         "503", "unavailable", "overloaded", "high demand",
         "429", "resource_exhausted", "rate limit",
+        "404", "not_found", "not found", "no longer available", "not available",
     ))
 
 
@@ -464,7 +484,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
         if not _is_overloaded_error(last_exc):
             break  # erro não é de sobrecarga — trocar de modelo não ajuda
         if mi < len(GEMINI_MODELS) - 1:
-            print(f"    [captcha/{tag}] '{model}' indisponível (sobrecarga) — tentando modelo alternativo...")
+            print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
     raise RuntimeError(f"Gemini {tag}: falhou em todos os modelos. Ultimo erro: {last_exc}")
 
 

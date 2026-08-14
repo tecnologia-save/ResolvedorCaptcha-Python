@@ -15,6 +15,7 @@ Combina o melhor de duas implementações:
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -578,6 +579,128 @@ def _get_challenge_element_locator(page):
 
 def _challenge_visible(page) -> bool:
     return _get_challenge_frame(page) is not None
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Freshness guard — a resposta so vale para o desafio que a originou
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# O defeito que isto fecha foi observado em producao: uma chamada ao modelo
+# chegou a levar ~2 minutos (503 no primeiro modelo, fallback no segundo) e,
+# nesse intervalo, o hCaptcha trocou o desafio. A resposta do desafio A foi
+# aplicada ao desafio B.
+#
+# O que tornava o bug SILENCIOSO: os cliques recriam o locator, e locators do
+# Playwright resolvem na hora do clique. O locator "fresco" aplica os indices
+# velhos a grade nova sem levantar nada. Ou seja, "o locator resolveu" e
+# "o desafio ainda existe" NAO sao prova de identidade — e por isso o guard nao
+# se apoia em nenhum dos dois.
+
+MSG_DESCARTE = "resposta descartada: desafio mudou"
+
+
+def _prompt_do_desafio(page) -> str | None:
+    """Enunciado normalizado do desafio ativo, ou None se ilegivel."""
+    frame = _get_challenge_frame(page)
+    if frame is None:
+        return None
+    try:
+        bruto = frame.evaluate(
+            "() => { const p = document.querySelector('.prompt-text'); "
+            "return p ? p.textContent : ''; }"
+        )
+    except Exception:  # noqa: BLE001 — qualquer falha aqui e' 'desafio mudou'
+        return None
+    texto = " ".join(str(bruto or "").split()).lower()
+    return texto or None
+
+
+def _capturar_desafio(page) -> tuple[bytes | None, dict | None]:
+    """Captura a regiao do desafio SEMPRE do mesmo jeito. (png, caixa).
+
+    Ter um unico ponto de captura e o que garante que a imagem comparada e a
+    imagem analisada. Duas capturas por mecanismos diferentes nunca bateriam, e
+    o guard rejeitaria tudo.
+    """
+    loc = _get_challenge_element_locator(page)
+    try:
+        caixa = loc.bounding_box()
+        png = loc.screenshot(timeout=8_000)
+    except Exception:  # noqa: BLE001 — captura falhou = identidade indeterminada
+        return None, None
+    return png, caixa
+
+
+def _fingerprint_desafio(page, png: bytes | None) -> str | None:
+    """Identidade do desafio: enunciado normalizado + hash da captura.
+
+    Os dois componentes se cobrem: o hCaptcha reusa o mesmo enunciado entre
+    rodadas (so o texto nao distingue), e uma troca de enunciado com imagens
+    parecidas passaria batida so pelos pixels.
+
+    Hash EXATO, de proposito. Nada de perceptual hash ou limiar de similaridade
+    nesta versao: um falso "mudou" custa uma recaptura; um falso "e o mesmo"
+    custa um clique no desafio errado. Ver o trade-off no README.
+
+    None significa "nao foi possivel determinar" — e indeterminado e tratado
+    como mudou.
+    """
+    if not png:
+        return None
+    prompt = _prompt_do_desafio(page)
+    if prompt is None:
+        return None
+    h = hashlib.sha256()
+    h.update(prompt.encode("utf-8", "replace"))
+    h.update(b"\x1f")
+    h.update(png)
+    return h.hexdigest()
+
+
+def _desafio_ainda_e_o_mesmo(page, fingerprint_origem: str | None) -> bool:
+    """True SO se o desafio atual for COMPROVADAMENTE o que gerou a analise.
+
+    Devolve False em qualquer indeterminacao: desafio ausente, enunciado
+    ilegivel, recaptura falhada ou fingerprint de origem inexistente.
+    """
+    if not fingerprint_origem:
+        return False
+    if not _challenge_visible(page):
+        return False
+    png, _caixa = _capturar_desafio(page)
+    atual = _fingerprint_desafio(page, png)
+    return bool(atual) and atual == fingerprint_origem
+
+
+def _mesma_caixa(a: dict | None, b: dict | None,
+                 tolerancia_px: float = 1.0) -> bool:
+    """Geometria equivalente.
+
+    A tolerancia cobre arredondamento de float do `bounding_box`, NAO
+    similaridade: 1 px nao desloca um tile de ~130 px para o vizinho.
+    """
+    if not a or not b:
+        return False
+    try:
+        return all(abs(float(a[k]) - float(b[k])) <= tolerancia_px
+                   for k in ("x", "y", "width", "height"))
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+def _geometria_estavel(page, caixa_origem: dict | None) -> bool:
+    """O iframe continua onde estava quando a captura foi feita.
+
+    Necessario so onde o clique e por PIXEL: ali um deslocamento da pagina faz
+    a coordenada antiga acertar um ponto arbitrario — pior do que nao clicar.
+    """
+    if not caixa_origem:
+        return False
+    try:
+        atual = _get_challenge_element_locator(page).bounding_box()
+    except Exception:  # noqa: BLE001 — geometria indeterminada = nao clicar
+        return False
+    return _mesma_caixa(atual, caixa_origem)
 
 
 def _detect_challenge_type(page, timeout_ms: int = 12_000) -> str:
@@ -1792,6 +1915,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
 
         valid_tiles: list[int] = []
         result = None
+        fingerprint: str | None = None
         for attempt in range(1, MAX_GEMINI_TRIES + 1):
             # Verifica ANTES do screenshot: o challenge pode ter sumido
             # entre o wait_for_tiles e agora (race condition pós-submit)
@@ -1802,6 +1926,9 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             iframe_loc = _get_challenge_element_locator(page)
             try:
                 png = iframe_loc.screenshot(timeout=8_000)
+                # A identidade nasce COM a captura e dos MESMOS bytes que vão
+                # ao modelo — é o que amarra a resposta a este desafio.
+                fingerprint = _fingerprint_desafio(page, png)
                 _pw, _ph = _png_dims(png)
                 print(
                     f"    [captcha/grade] Screenshot capturado: "
@@ -1840,6 +1967,12 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             f"    [captcha/grade] '{_limpar_texto(result.get('task_summary'))}' "
             f"| {result.get('confidence')} | tiles={valid_tiles}"
         )
+
+        # ── FRESHNESS GUARD — última coisa antes do PRIMEIRO clique ──────────
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+            print(f"    [captcha/grade] {MSG_DESCARTE}")
+            continue   # descarta a resposta INTEIRA e recaptura na próxima rodada
+
         _click_grade_tiles(page, valid_tiles)
         time.sleep(0.1)
         _submit_captcha(page)
@@ -1877,8 +2010,10 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
         # ── 1. Screenshot completo do iframe ─────────────────────────────────
         iframe_loc = _get_challenge_element_locator(page)
         iframe_box = iframe_loc.bounding_box()
+        fingerprint: str | None = None
         try:
             iframe_png = iframe_loc.screenshot(timeout=8_000)
+            fingerprint = _fingerprint_desafio(page, iframe_png)
         except Exception as e:
             print(f"    [captcha/grade_fused] Screenshot falhou (rodada {rnd}): {type(e).__name__}")
             if not _challenge_visible(page):
@@ -1979,6 +2114,18 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
         )
 
         # ── 5. Clique nos tiles usando bbox precisa ───────────────────────────
+        # FRESHNESS GUARD, duas perguntas distintas: o desafio ainda é o mesmo,
+        # e a geometria ainda é a mesma. A segunda não é redundante — aqui o
+        # clique é por PIXEL, com `grid_page_bbox` calculada ANTES do Gemini.
+        # Um scroll não muda um pixel da imagem e ainda assim manda o clique
+        # para um ponto arbitrário da página.
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+            print(f"    [captcha/grade_fused] {MSG_DESCARTE}")
+            continue
+        if not _geometria_estavel(page, iframe_box):
+            print(f"    [captcha/grade_fused] {MSG_DESCARTE}")
+            continue
+
         frame = _get_challenge_frame(page)
         task_count = 0
         if frame:
@@ -2021,6 +2168,13 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
             time.sleep(1)
             continue
 
+        # Aqui a captura enviada ao modelo vem de outro mecanismo (área da
+        # imagem, não o iframe). A identidade usa a captura CANÔNICA do iframe,
+        # que é a mesma dos dois lados da comparação — um screenshot a mais,
+        # de propósito: comparar mecanismos diferentes rejeitaria sempre.
+        _png_ident, _caixa_ident = _capturar_desafio(page)
+        fingerprint = _fingerprint_desafio(page, _png_ident)
+
         png_grid = _overlay_grid(png_raw)
         print(f"    [captcha/imagem] Screenshot com grid: {len(png_grid) // 1024} KB")
 
@@ -2039,9 +2193,18 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
             print("    [captcha/imagem] Confiança baixa — retentando...")
             continue
 
+        # ── FRESHNESS GUARD — antes de qualquer clique ou digitação ──────────
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+            print(f"    [captcha/imagem] {MSG_DESCARTE}")
+            continue
+
         if action == "click":
             if not positions:
                 print("    [captcha/imagem] Sem pontos — retentando...")
+                continue
+            # Clique por pixel sobre `area_bbox`, medida antes do modelo.
+            if not _geometria_estavel(page, _caixa_ident):
+                print(f"    [captcha/imagem] {MSG_DESCARTE}")
                 continue
             _click_grid_positions(page, positions, area_bbox)
         elif action == "type":

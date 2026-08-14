@@ -7,9 +7,26 @@ from resolvedor_captcha import solver
 # ── fixtures ─────────────────────────────────────────────────────────────────
 
 @pytest.fixture(autouse=True)
-def sem_sleep(monkeypatch):
-    """O solver dorme entre tentativas; nos testes isso e so lentidao."""
-    monkeypatch.setattr(solver.time, "sleep", lambda *_a, **_k: None)
+def relogio_virtual(monkeypatch):
+    """Tempo virtual: `sleep` avanca o relogio que `time` le.
+
+    Anular so o `sleep` nao bastaria — o solver faz polling com deadline
+    (`_wait_for_resolve`), e um `sleep` inerte transformaria cada espera de 3 s
+    num busy-loop de 3 s REAIS. Com o relogio virtual a suite fica rapida e,
+    mais importante, deterministica: nenhum teste depende de quanto a maquina
+    demorou.
+    """
+    agora = {"t": 1_000.0}
+
+    def dormir(segundos=0.0):
+        agora["t"] += max(float(segundos or 0.0), 0.01)
+
+    def ler():
+        agora["t"] += 0.001      # avanca tambem sem sleep: nada trava
+        return agora["t"]
+
+    monkeypatch.setattr(solver.time, "sleep", dormir)
+    monkeypatch.setattr(solver.time, "time", ler)
 
 
 @pytest.fixture

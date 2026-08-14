@@ -25,6 +25,7 @@ esgotar as tentativas.
 - [API pública](#api-pública)
 - [Depuração](#depuração)
 - [Estrutura do projeto](#estrutura-do-projeto)
+- [Freshness guard](#freshness-guard)
 - [Limitações e notas](#limitações-e-notas)
 
 ---
@@ -240,6 +241,47 @@ ResolvedorCaptcha/
     ├── prompt.md                 # Prompt de referência (sistema de grade A1/B2)
     └── debug_screenshots/        # Screenshots de depuração (runtime, ignorado)
 ```
+
+---
+
+## Freshness guard
+
+Uma resposta do modelo só pode gerar cliques **no mesmo desafio que gerou a
+captura**. Na dúvida, nenhum clique.
+
+O motivo é um defeito observado em produção: uma chamada ao modelo chegou a
+levar ~2 minutos (503 no primeiro modelo, *fallback* no segundo) e, nesse
+intervalo, o hCaptcha trocou o desafio sozinho. A resposta do desafio A foi
+aplicada ao desafio B. Recarregar a página à mão só torna o caso mais fácil de
+reproduzir — não é condição para ele.
+
+O bug era **silencioso** porque os cliques recriam o *locator*, e *locators* do
+Playwright resolvem na hora do clique: o *locator* "fresco" aplica os índices
+velhos à grade nova sem levantar nada. Por isso "o desafio ainda existe" e "o
+*locator* resolveu" **não** contam como prova de identidade.
+
+Imediatamente antes do primeiro clique, o solver recaptura a região e compara:
+
+```
+fingerprint = sha256(enunciado normalizado + captura da região do desafio)
+```
+
+Os dois componentes se cobrem: o hCaptcha reusa o mesmo enunciado entre rodadas
+(só o texto não distingue), e uma troca de enunciado com imagens parecidas
+passaria batida só pelos pixels. Onde o clique é por **pixel** (`grade_fused` e
+`imagem`), verifica-se também que a geometria do iframe não se deslocou — um
+*scroll* não muda um pixel da imagem e ainda assim manda o clique para um ponto
+arbitrário da página.
+
+Divergiu, ou não foi possível determinar? A resposta é **descartada por
+inteiro** — zero cliques, zero *submit* — e a rodada seguinte recaptura. Índices
+antigos nunca são remapeados para a grade nova.
+
+**Trade-off conhecido:** o hash é **exato**. Não há *perceptual hash*, *fuzzy
+matching* nem limiar de similaridade. Uma variação visual mínima (animação,
+*hover*) pode ser lida como "mudou" e custar uma rodada extra. É deliberado: um
+falso "mudou" custa uma recaptura; um falso "é o mesmo" custa um clique no
+desafio errado e, com ele, a sessão.
 
 ---
 

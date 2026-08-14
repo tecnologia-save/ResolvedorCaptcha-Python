@@ -50,6 +50,9 @@ class Captcha:
         self.cliques_pixel = []
         self.submits = 0
         self.historico = [self.desafio]
+        # Gancho do teste: o que o hCaptcha faz DEPOIS de um submit — apresentar
+        # outro desafio, ou aceitar e sumir.
+        self.ao_submeter = None
 
     # ── acoes do teste ───────────────────────────────────────────────────────
     def trocar_desafio(self, novo):
@@ -65,6 +68,11 @@ class Captcha:
 
     def resolver(self):
         self.ativo = False
+
+    def submeter(self):
+        self.submits += 1
+        if callable(self.ao_submeter):
+            self.ao_submeter(self)
 
 
 class _Handle:
@@ -98,7 +106,7 @@ class FakeFrame:
             return self.captcha.desafio.prompt if self._esta_ativo() else ""
         if ".button-submit" in js:                   # submit via JS
             if self._esta_ativo():
-                self.captcha.submits += 1
+                self.captcha.submeter()
                 return True
             return False
         raise AssertionError(f"JS nao modelado pelo fake: {js.strip()[:90]}")
@@ -155,7 +163,7 @@ class FakeLocator:
             self.captcha.tiles_clicados.append((self.captcha.desafio, self.idx))
             return
         if self.seletor in solver.SUBMIT_SELS:
-            self.captcha.submits += 1
+            self.captcha.submeter()
             return
         raise RuntimeError("elemento nao clicavel")
 

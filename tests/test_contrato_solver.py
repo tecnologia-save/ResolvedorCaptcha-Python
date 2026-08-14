@@ -13,7 +13,6 @@ from fakes import Captcha, Desafio, FakePage
 
 from resolvedor_captcha import solver
 
-
 # ── Deteccao do frame ATIVO entre varios pre-carregados ──────────────────────
 
 def test_encontra_o_frame_ativo_e_ignora_os_pre_carregados(page, captcha):

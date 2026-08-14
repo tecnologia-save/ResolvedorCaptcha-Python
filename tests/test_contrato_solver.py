@@ -181,3 +181,52 @@ def test_desafios_distintos_tem_pixels_distintos():
     c = Captcha(a)
     c.trocar_desafio(b)
     assert c.desafio is b and c.historico == [a, b]
+
+
+# ── Deteccao publica, sem resolucao ──────────────────────────────────────────
+
+def test_captcha_presente_detecta_desafio_aberto(page, captcha):
+    assert solver.captcha_presente(page) is True
+
+
+def test_captcha_presente_e_falso_quando_nao_ha_desafio(page, captcha):
+    captcha.resolver()
+    captcha.n_iframes = 0
+    assert solver.captcha_presente(page) is False
+
+
+def test_captcha_presente_detecta_o_widget_checkbox_fechado(page, captcha):
+    """Desafio ainda nao aberto tambem e' fluxo parado esperando alguem."""
+    captcha.resolver()             # nenhum frame=challenge ativo
+    captcha.checkbox_presente = 1
+    assert solver.captcha_presente(page) is True
+
+
+def test_captcha_presente_nao_chama_o_solver(page, captcha, monkeypatch):
+    """DETECCAO nao pode virar resolucao: nada de gastar chamada ao modelo
+    nem clicar tile que ninguem pediu."""
+    def proibido(*_a, **_k):
+        raise AssertionError("captcha_presente nao pode resolver")
+
+    monkeypatch.setattr(solver, "solve_hcaptcha", proibido)
+    monkeypatch.setattr(solver, "_gemini_grade", proibido)
+    monkeypatch.setattr(solver, "_click_grade_tiles", proibido)
+    solver.captcha_presente(page)
+    assert captcha.tiles_clicados == [] and captcha.submits == 0
+
+
+def test_captcha_presente_nunca_levanta(monkeypatch):
+    """Quem pergunta esta num estado incerto; excecao aqui vira ruido."""
+    class _PaginaQuebrada:
+        frames = property(lambda self: (_ for _ in ()).throw(RuntimeError("x")))
+
+        def locator(self, _s):
+            raise RuntimeError("x")
+
+    assert solver.captcha_presente(_PaginaQuebrada()) is False
+
+
+def test_detector_esta_na_api_publica():
+    import resolvedor_captcha
+    assert "captcha_presente" in resolvedor_captcha.__all__
+    assert resolvedor_captcha.captcha_presente is solver.captcha_presente

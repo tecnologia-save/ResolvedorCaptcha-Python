@@ -689,6 +689,30 @@ def _challenge_visible(page) -> bool:
     return _get_challenge_frame(page) is not None
 
 
+def captcha_presente(page) -> bool:
+    """Há hCaptcha aguardando interação nesta página? — DETECÇÃO, sem resolver.
+
+    Existe para quem precisa SABER que o captcha apareceu sem pedir que ele
+    seja resolvido: o portal Serviços RF apresenta um segundo desafio ao
+    representar um CNPJ, e esse não é automatizado — vai para intervenção
+    humana. Chamar `solve_hcaptcha` só para descobrir se há algo ali gastaria
+    chamadas ao modelo e clicaria em tiles que ninguém pediu.
+
+    Cobre os dois estados: o desafio ABERTO (`frame=challenge` ativo, com
+    enunciado e submit habilitado) e o widget "Sou humano" ainda fechado
+    (`frame=checkbox`) — dos dois lados o fluxo está parado esperando alguém.
+
+    Nunca levanta: o chamador está justamente perguntando sobre um estado
+    incerto, e uma exceção aqui viraria ruído no diagnóstico dele.
+    """
+    try:
+        if _challenge_visible(page):
+            return True
+        return page.locator(CHECKBOX_SEL).count() > 0
+    except Exception:  # noqa: BLE001 — indeterminado é "não detectei"
+        return False
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Freshness guard — a resposta so vale para o desafio que a originou
 # ──────────────────────────────────────────────────────────────────────────────

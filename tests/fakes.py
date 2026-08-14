@@ -45,6 +45,7 @@ class Captcha:
         self.desafio = desafio or Desafio()
         self.ativo = True
         self.n_iframes = n_iframes      # o hCaptcha pre-carrega varios
+        self.checkbox_presente = 0      # widget "Sou humano" ainda fechado
         self.idx_ativo = idx_ativo
         self.tiles_clicados = []
         self.cliques_pixel = []
@@ -130,6 +131,8 @@ class FakeLocator:
         return self.nth(0)
 
     def count(self):
+        if self.seletor == solver.CHECKBOX_SEL:
+            return self.captcha.checkbox_presente
         if self.seletor == solver.CHALLENGE_SEL:
             return self.captcha.n_iframes
         if self.seletor == solver.TASK_SEL or "task" in self.seletor:

@@ -19,6 +19,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import time
 from typing import Optional
 
@@ -401,7 +402,7 @@ def _salvar_debug(png: bytes, sufixo: str = "") -> None:
             f.write(png)
         print(f"    [captcha/debug] Screenshot salvo: {path}")
     except Exception as e:
-        print(f"    [captcha/debug] Erro ao salvar: {e}")
+        print(f"    [captcha/debug] Erro ao salvar: {type(e).__name__}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -489,6 +490,70 @@ def _is_overloaded_error(e) -> bool:
     ))
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Diagnostico de erro externo — sem corpo, sem mensagem do provedor
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# `str(e)` de um erro do google.genai carrega o JSON cru da resposta. Este
+# solver roda dentro de automacoes cujo stdout vira log de execucao na
+# plataforma, entao o corpo do provedor estava chegando ao registro da run.
+# Erros do Playwright, por sua vez, embutem seletor, URL do frame e trechos do
+# DOM.
+#
+# A regra passa a ser: nada que venha de fora entra no log em texto. Sai apenas
+# o que e NOSSO — categoria de vocabulario fechado, nome de modelo da nossa
+# lista, status numerico e o nome da classe. Ler `str(e)` para CLASSIFICAR
+# continua permitido; o que nao pode e imprimi-lo.
+
+_CATEGORIAS_ERRO = (
+    ("indisponivel",        ("503", "unavailable", "overloaded", "high demand")),
+    ("limite_de_uso",       ("429", "resource_exhausted", "rate limit")),
+    ("modelo_ausente",      ("404", "not_found", "not found", "no longer available")),
+    ("tempo_esgotado",      ("timeout", "timed out", "deadline")),
+    ("credencial",          ("401", "403", "api key", "unauthorized",
+                             "permission_denied")),
+    ("requisicao_invalida", ("400", "invalid_argument")),
+)
+
+
+def _categoria_do_erro(e) -> str:
+    """Categoria de vocabulario FECHADO. Nunca devolve texto do provedor."""
+    s = str(e or "").lower()
+    for categoria, marcas in _CATEGORIAS_ERRO:
+        if any(m in s for m in marcas):
+            return categoria
+    return "desconhecido"
+
+
+def _status_do_erro(e) -> int | None:
+    """Status HTTP, se houver. Inteiro entre 100 e 599 — e nada alem disso."""
+    for atributo in ("code", "status_code", "status"):
+        valor = getattr(e, atributo, None)
+        if isinstance(valor, int) and not isinstance(valor, bool) and 100 <= valor <= 599:
+            return valor
+    achado = re.search(r"\b([1-5]\d{2})\b", str(e or ""))
+    if achado:
+        return int(achado.group(1))
+    return None
+
+
+def _diagnostico_erro(e, modelo: str | None = None) -> str:
+    """Linha de log de um erro externo. So campos sob nosso controle.
+
+    `modelo` so aparece se estiver na nossa lista — um nome vindo de outro
+    lugar nao e nosso e nao entra.
+    """
+    partes = []
+    if modelo and modelo in GEMINI_MODELS:
+        partes.append(f"modelo={modelo}")
+    partes.append(f"categoria={_categoria_do_erro(e)}")
+    partes.append(f"tipo={type(e).__name__}")
+    status = _status_do_erro(e)
+    if status is not None:
+        partes.append(f"status={status}")
+    return " | ".join(partes)
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
@@ -511,7 +576,9 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
                 return json.loads(resp.text)
             except Exception as e:
                 last_exc = e
-                print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {_limpar_texto(e, 300)}")
+                print(f"    [captcha/{tag}] falha na chamada ao modelo | "
+                      f"{_diagnostico_erro(e, model)} | "
+                      f"tentativa={attempt}/{GEMINI_TRIES_PER_MODEL}")
                 # Sobrecarga/timeout é do POOL daquele modelo, não da chamada:
                 # a segunda tentativa longa no mesmo modelo só gasta a validade
                 # do screenshot. Os logs de produção mostram exatamente isso —
@@ -525,7 +592,9 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
             break  # erro não é de sobrecarga — trocar de modelo não ajuda
         if mi < len(GEMINI_MODELS) - 1:
             print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
-    raise RuntimeError(f"Gemini {tag}: falhou em todos os modelos. Ultimo erro: {last_exc}")
+    # A mensagem desta excecao tambem e log: quem a captura acima imprime.
+    raise RuntimeError(
+        f"Gemini {tag}: falhou em todos os modelos ({_diagnostico_erro(last_exc)})")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -852,7 +921,7 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000) -> str:
         print(f"    [captcha] Tipo: imagem completa ({count} tile(s)).")
         return "imagem"
     except Exception as e:
-        print(f"    [captcha] Erro ao detectar tipo: {e}. Assumindo grade.")
+        print(f"    [captcha] Erro ao detectar tipo: {type(e).__name__}. Assumindo grade.")
         return "grade"
 
 
@@ -1004,7 +1073,7 @@ def _get_task_image_screenshot_and_bbox(
                 print(f"    [captcha/imagem] Via JS img[{js_img['index']}]: {img_box['width']:.0f}x{img_box['height']:.0f}px")
                 return png, build_page_bbox(img_box)
     except Exception as e:
-        print(f"    [captcha/imagem] JS img fallback: {e}")
+        print(f"    [captcha/imagem] JS img fallback: {type(e).__name__}")
 
     # Estratégia 3: DOM bounds (prompt.bottom → submit.top) + page.screenshot(clip)
     try:
@@ -1034,7 +1103,7 @@ def _get_task_image_screenshot_and_bbox(
                 print(f"    [captcha/imagem] Via DOM bounds: {bounds['width']:.0f}x{bounds['height']:.0f}px")
                 return png, page_bbox
     except Exception as e:
-        print(f"    [captcha/imagem] DOM bounds falhou: {e}")
+        print(f"    [captcha/imagem] DOM bounds falhou: {type(e).__name__}")
 
     return None, None
 
@@ -1105,7 +1174,7 @@ def _overlay_grid(png: bytes, cols: int = GRID_COLS, rows: int = GRID_ROWS) -> b
         img.save(buf, format="PNG")
         return buf.getvalue()
     except Exception as e:
-        print(f"    [captcha] Erro no grid overlay: {e}")
+        print(f"    [captcha] Erro no grid overlay: {type(e).__name__}")
         return png
 
 
@@ -1155,7 +1224,7 @@ def _overlay_3x3_grid(png: bytes) -> bytes:
         img.save(buf, format="PNG")
         return buf.getvalue()
     except Exception as e:
-        print(f"    [captcha] Erro no 3x3 overlay: {e}")
+        print(f"    [captcha] Erro no 3x3 overlay: {type(e).__name__}")
         return png
 
 
@@ -1339,7 +1408,7 @@ def _click_grade_tiles(page, indices: list[int]) -> None:
             time.sleep(0.05)
             print(f"    [captcha] Tile {idx} clicado.")
         except Exception as e:
-            print(f"    [captcha] Erro ao clicar tile {idx}: {e}")
+            print(f"    [captcha] Erro ao clicar tile {idx}: {type(e).__name__}")
 
 
 def _click_fused_grade_tiles(page, indices: list[int],
@@ -1413,7 +1482,7 @@ def _click_fused_grade_tiles(page, indices: list[int],
             time.sleep(0.08)
             print(f"    [captcha] Tile fused {idx} (row={row},col={col}) -> ({x:.0f},{y:.0f})")
         except Exception as e:
-            print(f"    [captcha] Erro ao clicar tile fused {idx}: {e}")
+            print(f"    [captcha] Erro ao clicar tile fused {idx}: {type(e).__name__}")
 
 
 def _click_grid_positions(page, positions: list[dict], bbox: dict) -> None:
@@ -1433,7 +1502,7 @@ def _click_grid_positions(page, positions: list[dict], bbox: dict) -> None:
             time.sleep(0.12)
             print(f"    [captcha] Grid ({col},{row}) -> ({x:.0f},{y:.0f}) | {pos.get('description', '')}")
         except Exception as e:
-            print(f"    [captcha] Erro ao clicar grid ({col},{row}): {e}")
+            print(f"    [captcha] Erro ao clicar grid ({col},{row}): {type(e).__name__}")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1536,7 +1605,7 @@ def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
             page.wait_for_timeout(1_000)
             return True
         except Exception as e:
-            print(f"    [captcha] Checkbox tentativa {tentativa}/3: {e}")
+            print(f"    [captcha] Checkbox tentativa {tentativa}/3: {type(e).__name__}")
             page.wait_for_timeout(600)
 
     print("    [captcha] Não foi possível clicar no checkbox.")
@@ -1600,7 +1669,7 @@ def _capturar_sequencia_animacao(page, n_frames: int = 6, interval_s: float = 1.
             else:
                 print(f"    [captcha/cartao] Frame {i + 1}: vazio ({len(png) if png else 0} bytes).")
         except Exception as e:
-            print(f"    [captcha/cartao] Frame {i + 1} erro: {type(e).__name__}: {e}")
+            print(f"    [captcha/cartao] Frame {i + 1} erro: {type(e).__name__}")
         if i < n_frames - 1:
             time.sleep(interval_s)
 
@@ -1657,7 +1726,7 @@ def _frame_click_at_pct(frame, idx_alvo: int) -> Optional[str]:
             return el.tagName + ' class="' + el.className + '" at (' + x + ',' + y + ') size=' + Math.round(r.width) + 'x' + Math.round(r.height);
         }""", [px, py])
     except Exception as e:
-        print(f"    [captcha/cartao] elementFromPoint erro: {e}")
+        print(f"    [captcha/cartao] elementFromPoint erro: {type(e).__name__}")
         return None
 
 
@@ -1696,7 +1765,8 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
             # _gemini_call já tenta todos os modelos (fallback em sobrecarga 503).
             result = _gemini_call(contents, _SCHEMA_CARTAO_ANIMAL, api_key, "cartao")
         except Exception as e:
-            print(f"    [captcha/cartao] Gemini erro tentativa {attempt}: {e}")
+            print(f"    [captcha/cartao] Gemini erro tentativa {attempt} | "
+                  f"{_diagnostico_erro(e)}")
             break  # todos os modelos falharam; repetir rápido não ajuda
 
         idx_dif = result.get("indice_diferente")
@@ -1767,7 +1837,7 @@ def _js_click_carta(page, idx_alvo: int) -> bool:
             return True
         print(f"    [captcha/cartao] JS click: nenhum seletor encontrou 4 cards.")
     except Exception as e:
-        print(f"    [captcha/cartao] JS click erro: {e}")
+        print(f"    [captcha/cartao] JS click erro: {type(e).__name__}")
     return False
 
 
@@ -1861,7 +1931,7 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
     try:
         box = iframe_loc.bounding_box()
     except Exception as e:
-        print(f"    [captcha/cartao] Erro ao obter bounding_box: {e}")
+        print(f"    [captcha/cartao] Erro ao obter bounding_box: {type(e).__name__}")
         return False
 
     if not box:
@@ -1883,7 +1953,7 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
         page.mouse.click(click_x, click_y)
         return True
     except Exception as e:
-        print(f"    [captcha/cartao] Erro no clique: {e}")
+        print(f"    [captcha/cartao] Erro no clique: {type(e).__name__}")
         return False
 
 
@@ -1985,7 +2055,8 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
             try:
                 result = _gemini_grade(png, ref_img, api_key)
             except Exception as e:
-                print(f"    [captcha/grade] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
+                print(f"    [captcha/grade] Gemini erro (tentativa {attempt}) | "
+                      f"{_diagnostico_erro(e)}")
                 time.sleep(1)
                 continue
 
@@ -2110,7 +2181,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
                             f"{bounds['width']:.0f}×{bounds['height']:.0f}px"
                         )
             except Exception as e:
-                print(f"    [captcha/grade_fused] Recorte falhou: {e}")
+                print(f"    [captcha/grade_fused] Recorte falhou: {type(e).__name__}")
 
         # ── 4. Gemini ─────────────────────────────────────────────────────────
         valid_tiles: list[int] = []
@@ -2130,7 +2201,8 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
                     ref_img = _get_reference_image_bytes(page)
                     result = _gemini_grade(iframe_png, ref_img, api_key)
             except Exception as e:
-                print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}): {_limpar_texto(e, 300)}")
+                print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}) | "
+                      f"{_diagnostico_erro(e)}")
                 time.sleep(1)
                 continue
 
@@ -2220,7 +2292,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
         try:
             result = _gemini_grid(png_grid, instrucao, api_key)
         except Exception as e:
-            print(f"    [captcha/imagem] Gemini falhou: {_limpar_texto(e, 300)}")
+            print(f"    [captcha/imagem] Gemini falhou | {_diagnostico_erro(e)}")
             continue
 
         positions  = result.get("click_positions") or []
@@ -2254,7 +2326,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
                     cf.locator("input").first.fill(txt)
                     print(f"    [captcha/imagem] Digitado: '{txt}'")
                 except Exception as e:
-                    print(f"    [captcha/imagem] Erro ao digitar: {e}")
+                    print(f"    [captcha/imagem] Erro ao digitar: {type(e).__name__}")
 
         time.sleep(0.2)
         _submit_captcha(page)

@@ -1,0 +1,25 @@
+[project]
+name = "ResolvedorCaptcha"
+version = "1.0.0"
+description = "Resolvedor de hCaptcha via Gemini — usado pelas bibliotecas de login"
+requires-python = ">=3.10"
+# Dependencias de runtime: setup.py / requirements.txt (fonte unica ja existente).
+
+[dependency-groups]
+# Ferramentas de desenvolvimento — NAO sao dependencias de runtime do pacote.
+# Instalacao: pip install --group dev   (requer pip >= 25.1)
+dev = [
+    "ruff>=0.6,<1.0",
+    "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# O pacote esta na raiz do repo; sem isto `pytest` direto nao acha
+# `resolvedor_captcha` (so `python -m pytest`, que poe o CWD no sys.path).
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py310"
+# Sem `select`: conjunto padrao do Ruff instalado, igual ao piloto da Apuracao.
+# Ampliar somente com evidencia.

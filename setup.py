@@ -1,15 +1,10 @@
-from setuptools import setup, find_packages
+"""Compatibilidade com instaladores legados.
 
-setup(
-    name="ResolvedorCaptcha",
-    version="1.0.0",
-    packages=find_packages(),
-    package_data={"resolvedor_captcha": ["prompt.md"]},
-    python_requires=">=3.10",
-    # O objeto `page` vem do chamador (as automacoes usam patchright), entao
-    # playwright NAO entra aqui: declarar instalaria um pacote que ninguem importa.
-    install_requires=[
-        "google-genai>=1.0.0",
-        "Pillow>=10.0.0",
-    ],
-)
+Os metadados vivem TODOS no `pyproject.toml` — nome, versao, dependencias e
+pacotes. Este arquivo nao os repete de proposito: com um `[project]` presente,
+o setuptools ignora o que for declarado aqui, e a duplicata so serviria para
+divergir em silencio (foi assim que a distribuicao ficou sem `Requires-Dist`).
+"""
+from setuptools import setup
+
+setup()

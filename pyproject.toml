@@ -1,9 +1,31 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ResolvedorCaptcha"
 version = "1.0.0"
 description = "Resolvedor de hCaptcha via Gemini — usado pelas bibliotecas de login"
 requires-python = ">=3.10"
-# Dependencias de runtime: setup.py / requirements.txt (fonte unica ja existente).
+# FONTE UNICA das dependencias de runtime.
+#
+# Quando existe um `[project]`, o setuptools ignora `install_requires` do
+# setup.py: campo nao declarado aqui vira campo VAZIO na distribuicao, nao
+# "herdado". Foi o que aconteceu ao introduzir este arquivo — o pacote passou a
+# ser publicado sem `Requires-Dist`, e uma instalacao limpa ficaria sem
+# google-genai e sem Pillow, com o solver caindo nos fallbacks `_GENAI=False` e
+# `_PIL=False` em silencio. Manter esta lista alinhada com requirements.txt; ha
+# teste que compara as duas.
+dependencies = [
+    "google-genai>=1.0.0",
+    "Pillow>=10.0.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["resolvedor_captcha*"]
+
+[tool.setuptools.package-data]
+resolvedor_captcha = ["prompt.md"]
 
 [dependency-groups]
 # Ferramentas de desenvolvimento — NAO sao dependencias de runtime do pacote.

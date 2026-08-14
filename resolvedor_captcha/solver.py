@@ -82,6 +82,22 @@ GRID_ROWS              = 20
 MAX_GEMINI_TRIES       = 5    # tentativas nos loops de alto nível (screenshot/semântica)
 GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (troca rápido)
 
+# Teto por TENTATIVA de chamada ao modelo, em milissegundos.
+#
+# Sem timeout explícito o SDK usa o default dele, e em produção uma única
+# tentativa chegou a durar ~2 minutos. O custo não é a espera: é que o
+# screenshot analisado envelhece, o hCaptcha troca o desafio e a resposta nasce
+# obsoleta. O freshness guard impede o clique errado, mas cada análise perdida
+# é uma rodada jogada fora.
+#
+# 30 s cobre com folga o modelo mais lento da lista (pro-latest, 23,3 s medidos
+# — ver o comentário de GEMINI_MODELS) sem esticar a janela de obsolescência.
+# Ajustável por ambiente para diagnóstico, com piso de 1 s.
+try:
+    GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "30000") or "30000"))
+except (ValueError, TypeError):
+    GEMINI_TIMEOUT_MS = 30_000
+
 CHECKBOX_SEL   = "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
 CHALLENGE_SEL  = "iframe[src*='hcaptcha.com'][src*='frame=challenge']"
 TASK_SEL       = ".task"
@@ -430,11 +446,18 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL):
             kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=THINKING_BUDGET)
         except Exception:
             pass
+    # Teto por tentativa. Fica na config, e não no cliente, porque o cliente é
+    # cacheado no módulo: aqui o limite acompanha cada chamada e é inspecionável.
+    try:
+        kwargs["http_options"] = _gt.HttpOptions(timeout=GEMINI_TIMEOUT_MS)
+    except Exception:  # noqa: BLE001, S110 — SDK antigo sem HttpOptions
+        pass
     try:
         return _gt.GenerateContentConfig(**kwargs)
     except Exception:
-        # Fallback sem thinking se a versão instalada não suportar
-        kwargs_safe = {k: v for k, v in kwargs.items() if k != "thinking_config"}
+        # Fallback sem os opcionais que versões antigas não aceitam
+        kwargs_safe = {k: v for k, v in kwargs.items()
+                       if k not in ("thinking_config", "http_options")}
         return _gt.GenerateContentConfig(**kwargs_safe)
 
 
@@ -447,12 +470,22 @@ def _is_overloaded_error(e) -> bool:
         (gemini-2.0-flash e gemini-2.5-flash já respondem 404 para chaves novas).
         Sem o 404 aqui, um modelo aposentado derruba a resolução inteira em vez
         de cair para o próximo da lista.
+      - estouro do teto de tempo: `GEMINI_TIMEOUT_MS`. A lista de modelos está
+        ordenada por latência MEDIDA, então o próximo é literalmente o mais
+        rápido dos que restam — insistir no que acabou de estourar é a pior
+        escolha disponível.
+
+    O que NÃO entra aqui, de propósito: erro de autenticação, chave inválida e
+    argumento inválido. Esses não melhoram trocando de modelo, e deixá-los
+    circular pela lista transformaria um erro de configuração em quatro chamadas
+    inúteis e um diagnóstico pior.
     """
     s = str(e or "").lower()
     return any(k in s for k in (
         "503", "unavailable", "overloaded", "high demand",
         "429", "resource_exhausted", "rate limit",
         "404", "not_found", "not found", "no longer available", "not available",
+        "timeout", "timed out", "deadline",
     ))
 
 
@@ -479,6 +512,12 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
             except Exception as e:
                 last_exc = e
                 print(f"    [captcha/{tag}] {model} tentativa {attempt}/{GEMINI_TRIES_PER_MODEL}: {_limpar_texto(e, 300)}")
+                # Sobrecarga/timeout é do POOL daquele modelo, não da chamada:
+                # a segunda tentativa longa no mesmo modelo só gasta a validade
+                # do screenshot. Os logs de produção mostram exatamente isso —
+                # `flash-latest 1/2: 503` e sucesso imediato no modelo seguinte.
+                if _is_overloaded_error(e):
+                    break
                 if attempt < GEMINI_TRIES_PER_MODEL:
                     time.sleep(min(2 ** attempt, 8))
         # Esgotou as tentativas neste modelo.

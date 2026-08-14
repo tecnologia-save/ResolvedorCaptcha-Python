@@ -99,6 +99,23 @@ try:
 except (ValueError, TypeError):
     GEMINI_TIMEOUT_MS = 30_000
 
+# Tipos de desafio que `_detect_challenge_type` classifica. Vocabulário FECHADO
+# e público: quem integra precisa decidir POLÍTICA por tipo — o portal Serviços
+# RF, por exemplo, só autoriza resolução automática de alguns deles ao
+# representar um CNPJ.
+TIPO_NENHUM = "nenhum"
+TIPO_GRADE = "grade"
+TIPO_GRADE_FUSED = "grade_fused"
+TIPO_CARTAO_ANIMAL = "cartao_animal"
+TIPO_IMAGEM = "imagem"
+# Só a API pública de INSPEÇÃO devolve este: `_detect_challenge_type` chuta
+# `grade` quando a classificação falha, e para quem decide política esse chute
+# é perigoso — ver `detectar_tipo_captcha`.
+TIPO_DESCONHECIDO = "desconhecido"
+
+TIPOS_CONHECIDOS = (TIPO_NENHUM, TIPO_GRADE, TIPO_GRADE_FUSED,
+                    TIPO_CARTAO_ANIMAL, TIPO_IMAGEM, TIPO_DESCONHECIDO)
+
 CHECKBOX_SEL   = "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
 CHALLENGE_SEL  = "iframe[src*='hcaptcha.com'][src*='frame=challenge']"
 TASK_SEL       = ".task"
@@ -689,6 +706,30 @@ def _challenge_visible(page) -> bool:
     return _get_challenge_frame(page) is not None
 
 
+def detectar_tipo_captcha(page) -> str:
+    """Classifica o desafio ATUAL — INSPEÇÃO, nunca resolução.
+
+    Existe para que o integrador decida POLÍTICA POR TIPO. O portal Serviços RF
+    apresenta, ao representar um CNPJ, desafios de formatos diferentes: alguns a
+    automação resolve, outros não. Sem saber o tipo ANTES, a única escolha seria
+    tentar tudo — e uma tentativa de ~40 s num formato que não vai sair é tempo
+    perdido e chamada ao modelo desperdiçada.
+
+    Devolve um de `TIPOS_CONHECIDOS`. Ao contrário do uso interno, **não chuta
+    `grade` quando a classificação falha**: devolve `TIPO_DESCONHECIDO`, porque
+    quem decide política precisa distinguir "é grade" de "não consegui saber".
+
+    Nunca levanta.
+    """
+    try:
+        if _get_challenge_frame(page) is None:
+            return TIPO_NENHUM
+        tipo = _detect_challenge_type(page, ao_falhar=TIPO_DESCONHECIDO)
+    except Exception:  # noqa: BLE001 — indeterminado é "não sei classificar"
+        return TIPO_DESCONHECIDO
+    return tipo if tipo in TIPOS_CONHECIDOS else TIPO_DESCONHECIDO
+
+
 def captcha_presente(page) -> bool:
     """Há hCaptcha aguardando interação nesta página? — DETECÇÃO, sem resolver.
 
@@ -835,7 +876,8 @@ def _geometria_estavel(page, caixa_origem: dict | None) -> bool:
     return _mesma_caixa(atual, caixa_origem)
 
 
-def _detect_challenge_type(page, timeout_ms: int = 12_000) -> str:
+def _detect_challenge_type(page, timeout_ms: int = 12_000,
+                           ao_falhar: str = TIPO_GRADE) -> str:
     """Detecta tipo do desafio: 'grade', 'grade_fused', 'imagem', ou 'nenhum'.
 
     grade       — 9+ .task separados (grade 3x3 normal)
@@ -945,8 +987,12 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000) -> str:
         print(f"    [captcha] Tipo: imagem completa ({count} tile(s)).")
         return "imagem"
     except Exception as e:
-        print(f"    [captcha] Erro ao detectar tipo: {type(e).__name__}. Assumindo grade.")
-        return "grade"
+        # `ao_falhar` existe para separar dois usos com necessidades opostas:
+        # `solve_hcaptcha` prefere chutar `grade` e tentar; quem decide POLÍTICA
+        # precisa saber que não deu para classificar.
+        print(f"    [captcha] Erro ao detectar tipo: {type(e).__name__}. "
+              f"Assumindo {ao_falhar}.")
+        return ao_falhar
 
 
 # ──────────────────────────────────────────────────────────────────────────────

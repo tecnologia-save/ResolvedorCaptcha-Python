@@ -230,3 +230,88 @@ def test_detector_esta_na_api_publica():
     import resolvedor_captcha
     assert "captcha_presente" in resolvedor_captcha.__all__
     assert resolvedor_captcha.captcha_presente is solver.captcha_presente
+
+
+# ── Classificacao publica do desafio ─────────────────────────────────────────
+
+def test_tipos_conhecidos_sao_os_valores_reais_do_detector():
+    """Vocabulario fechado, batendo com o que `_detect_challenge_type` devolve."""
+    assert solver.TIPOS_CONHECIDOS == (
+        "nenhum", "grade", "grade_fused", "cartao_animal", "imagem",
+        "desconhecido")
+
+
+def test_sem_desafio_devolve_nenhum(page, captcha):
+    captcha.resolver()
+    captcha.n_iframes = 0
+    assert solver.detectar_tipo_captcha(page) == solver.TIPO_NENHUM
+
+
+def test_grade_e_classificada(page, captcha, monkeypatch):
+    monkeypatch.setattr(solver, "_detect_challenge_type",
+                        lambda *_a, **_k: "grade")
+    assert solver.detectar_tipo_captcha(page) == solver.TIPO_GRADE
+
+
+@pytest.mark.parametrize("tipo", ["grade_fused", "cartao_animal", "imagem"])
+def test_demais_tipos_sao_classificados(page, captcha, monkeypatch, tipo):
+    monkeypatch.setattr(solver, "_detect_challenge_type",
+                        lambda *_a, **_k: tipo)
+    assert solver.detectar_tipo_captcha(page) == tipo
+
+
+def test_classificacao_falha_devolve_desconhecido_e_nao_chuta_grade(
+        page, captcha, monkeypatch):
+    """A diferenca que importa para quem decide politica.
+
+    Uso interno chuta `grade` e tenta; a API de inspecao nao pode, senao um
+    formato nao classificavel entraria no caminho automatico por engano.
+    """
+    def explode(*_a, **_k):
+        raise RuntimeError("frame morreu")
+
+    monkeypatch.setattr(solver, "_detect_challenge_type", explode)
+    assert solver.detectar_tipo_captcha(page) == solver.TIPO_DESCONHECIDO
+
+
+def test_ao_falhar_preserva_o_comportamento_interno(page, captcha, monkeypatch):
+    """`solve_hcaptcha` continua chutando `grade` — nada mudou para ele."""
+    import inspect
+    assert (inspect.signature(solver._detect_challenge_type)
+            .parameters["ao_falhar"].default == solver.TIPO_GRADE)
+
+
+def test_valor_fora_do_vocabulario_vira_desconhecido(page, captcha, monkeypatch):
+    monkeypatch.setattr(solver, "_detect_challenge_type",
+                        lambda *_a, **_k: "formato_novo_do_portal")
+    assert solver.detectar_tipo_captcha(page) == solver.TIPO_DESCONHECIDO
+
+
+def test_classificacao_nunca_levanta():
+    class _PaginaQuebrada:
+        frames = property(lambda self: (_ for _ in ()).throw(RuntimeError("x")))
+
+        def locator(self, _s):
+            raise RuntimeError("x")
+
+    assert solver.detectar_tipo_captcha(_PaginaQuebrada()) == solver.TIPO_DESCONHECIDO
+
+
+def test_classificar_nao_resolve(page, captcha, monkeypatch):
+    """INSPECAO, nao resolucao: nenhum clique, nenhuma chamada ao modelo."""
+    def proibido(*_a, **_k):
+        raise AssertionError("detectar_tipo_captcha nao pode resolver")
+
+    monkeypatch.setattr(solver, "solve_hcaptcha", proibido)
+    monkeypatch.setattr(solver, "_gemini_grade", proibido)
+    monkeypatch.setattr(solver, "_click_grade_tiles", proibido)
+    solver.detectar_tipo_captcha(page)
+    assert captcha.tiles_clicados == [] and captcha.submits == 0
+
+
+def test_classificador_esta_na_api_publica():
+    import resolvedor_captcha
+    assert "detectar_tipo_captcha" in resolvedor_captcha.__all__
+    for nome in ("TIPO_GRADE", "TIPO_GRADE_FUSED", "TIPO_CARTAO_ANIMAL",
+                 "TIPO_IMAGEM", "TIPO_NENHUM", "TIPO_DESCONHECIDO"):
+        assert nome in resolvedor_captcha.__all__

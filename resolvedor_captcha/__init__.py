@@ -1,3 +1,36 @@
-from .solver import captcha_presente, cell_to_viewport, solve_captcha, solve_hcaptcha
+"""Resolvedor de hCaptcha.
 
-__all__ = ["captcha_presente", "cell_to_viewport", "solve_captcha", "solve_hcaptcha"]
+Alem de resolver, o pacote expoe INSPECAO: `captcha_presente` diz se ha desafio
+e `detectar_tipo_captcha` diz de qual tipo ele e. Quem integra usa isso para
+decidir POLITICA POR TIPO — nem todo fluxo autoriza resolucao automatica de
+todos os formatos.
+"""
+from .solver import (
+    TIPO_CARTAO_ANIMAL,
+    TIPO_DESCONHECIDO,
+    TIPO_GRADE,
+    TIPO_GRADE_FUSED,
+    TIPO_IMAGEM,
+    TIPO_NENHUM,
+    TIPOS_CONHECIDOS,
+    captcha_presente,
+    cell_to_viewport,
+    detectar_tipo_captcha,
+    solve_captcha,
+    solve_hcaptcha,
+)
+
+__all__ = [
+    "TIPOS_CONHECIDOS",
+    "TIPO_CARTAO_ANIMAL",
+    "TIPO_DESCONHECIDO",
+    "TIPO_GRADE",
+    "TIPO_GRADE_FUSED",
+    "TIPO_IMAGEM",
+    "TIPO_NENHUM",
+    "captcha_presente",
+    "cell_to_viewport",
+    "detectar_tipo_captcha",
+    "solve_captcha",
+    "solve_hcaptcha",
+]

@@ -4,7 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ResolvedorCaptcha"
-version = "1.0.0"
+# VERSAO E PARTE DA CORRECAO, nao formalidade. O agente do AutoHub roda
+# `pip install -r requirements.txt` sem `--upgrade`: com a versao inalterada, o
+# pip considera o pacote ja satisfeito e MANTEM o antigo, por mais que o SHA do
+# pin mude. Foi assim que o freshness guard nao chegou ao Edge. Mudou codigo
+# aqui, sobe o PATCH.
+version = "1.0.1"
 description = "Resolvedor de hCaptcha via Gemini — usado pelas bibliotecas de login"
 requires-python = ">=3.10"
 # FONTE UNICA das dependencias de runtime.

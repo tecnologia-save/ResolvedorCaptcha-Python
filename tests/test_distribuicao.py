@@ -60,3 +60,14 @@ def test_build_backend_declarado():
 
 def test_versao_e_semver_de_tres_partes():
     assert re.fullmatch(r"\d+\.\d+\.\d+", PYPROJECT["project"]["version"])
+
+
+def test_versao_avancou_alem_da_que_ficou_presa_no_edge():
+    """`1.0.0` e a versao que ficou presa no venv do Edge.
+
+    Enquanto a distribuicao disser 1.0.0, `pip install -r` sem `--upgrade`
+    mantem o pacote antigo por mais que o SHA do pin mude — comportamento
+    reproduzido em ambiente isolado. Este teste impede que uma correcao futura
+    volte a nascer inalcancavel.
+    """
+    assert PYPROJECT["project"]["version"] != "1.0.0"

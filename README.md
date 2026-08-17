@@ -3,7 +3,7 @@
 Resolvedor automático de **hCaptcha** em Python, projetado para automações com
 **Playwright** e integração com **UiPath**. O pacote recebe uma página
 (`page`) já controlada pela automação, detecta o tipo de desafio do hCaptcha,
-usa o **Google Gemini 2.5 Flash** (visão computacional multimodal) para
+usa o **Google Gemini Flash** (visão computacional multimodal) para
 interpretar as imagens e executa os cliques/envios necessários até resolver — ou
 esgotar as tentativas.
 
@@ -287,8 +287,24 @@ desafio errado e, com ele, a sessão.
 
 ## Limitações e notas
 
-- **Dependente de modelo visual** — a acurácia depende do Gemini 2.5 Flash; o
-  modelo é configurado em `GEMINI_MODEL` no [solver.py](resolvedor_captcha/solver.py).
+- **Dependente de modelo visual** — a acurácia depende do modelo do Gemini. A
+  lista fica em `GEMINI_MODELS` no [solver.py](resolvedor_captcha/solver.py) e é
+  tentada em ordem: se o modelo da vez estiver indisponível (503), aposentado
+  (404) ou estourar `GEMINI_TIMEOUT_MS`, a chamada cai para o próximo.
+  A ordem vem de medição de disponibilidade (17/08/2026, 16 chamadas por
+  modelo) — o comentário acima da lista registra os números e por que cada
+  modelo reprovado ficou de fora. Dá para sobrescrever sem alterar o código:
+  `GEMINI_MODELS="modelo1,modelo2,..."` no ambiente.
+
+  | Ordem | Modelo | Papel |
+  |-------|--------|-------|
+  | 1 | `gemini-3.5-flash` | Primário — flash completo, 16/16 na medição |
+  | 2 | `gemini-3-flash-preview` | Fallback — o outro flash completo estável, pool distinto |
+  | 3 | `gemini-3.5-flash-lite` | Fallback — o mais rápido e o de latência mais previsível |
+  | 4 | `gemini-flash-lite-latest` | Último recurso — alias que migra sozinho |
+
+  > A família 2.x (`gemini-2.0-flash`, `gemini-2.5-flash`) responde 404
+  > *"no longer available"* para chaves novas — não use.
 - **Custo de API** — cada rodada faz uma ou mais chamadas ao Gemini (com até 5
   retentativas). Desafios encadeados consomem múltiplas chamadas.
 - **Sensível a layout** — seletores CSS e posições percentuais (ex.: `_CARD_PCT`

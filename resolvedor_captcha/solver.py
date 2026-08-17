@@ -44,21 +44,42 @@ except ImportError:
 # ou indisponível (404), a chamada cai para o próximo. Modelos diferentes têm pools
 # de capacidade separados no Google, então o fallback resolve picos momentâneos.
 #
-# A ordem abaixo veio de medição na tarefa real do solver (grade 3x3 + response_schema,
-# thinking 4096): todos acertaram 3/3; o desempate foi latência média por chamada —
-# flash-latest 5.9s, 3.6-flash 7.3s, flash-lite-latest 10.2s, 3.1-flash-lite 11.8s,
-# 3.5-flash 21.3s, pro-latest 23.3s. O pro entra antes do lite porque é a carta de
-# maior acurácia quando os flash erram o desafio, não por velocidade.
+# A ordem é definida por MEDIÇÃO na forma de chamada real do solver (imagem de
+# grade 3x3 + _PROMPT_GRADE + response_schema + thinking 4096 + timeout 30s).
+# Remedição em 17/08/2026, 16 chamadas por modelo (4 desafios sintéticos de
+# gabarito conhecido x 4 repetições) — chamadas concluídas e latência média:
+#   3.5-flash        16/16  2,7s (pior 3,5s)   3-flash-preview  16/16  3,1s (4,1s)
+#   3.5-flash-lite   16/16  2,2s (pior 2,7s)   flash-lite-latest 16/16 2,2s (3,3s)
+#   3.1-flash-lite   16/16  4,7s (pior 25,4s)  3.1-pro-preview   4/16  (12 timeouts)
+#   pro-latest        3/16  (11 timeouts)      flash-latest       3/16  (9 timeouts, 4x 503)
+#   3.6-flash         3/8                      3.7-flash          2/8
+# Acurácia: TODAS as chamadas concluídas acertaram o gabarito, em qualquer
+# modelo. Ou seja, o que separa os modelos nesta tarefa NÃO é acerto — é
+# CONCLUIR a chamada. Por isso a lista é ordenada por disponibilidade medida.
+#
+# Saíram da lista por instabilidade comprovada, não por pico isolado:
+#   - pro-latest e 3.1-pro-preview: o pool "pro" estoura o teto de 30s na maioria
+#     das chamadas. O pro era a "carta de acurácia" quando os flash erram, mas
+#     esse papel nunca existiu de fato — `_gemini_call` só troca de modelo em
+#     erro de DISPONIBILIDADE (503/404/timeout), nunca por resposta errada. Um
+#     modelo que só é alcançado quando os anteriores caem precisa ser o mais
+#     disponível, e o pro é justamente o menos.
+#   - flash-latest, 3.6-flash, 3.7-flash: os flash "de topo" seguem com o pool
+#     saturado — 503 e timeout são a regra, não o pico.
 #
 # NÃO usar a família 2.x: gemini-2.0-flash e gemini-2.5-flash respondem 404
-# ("no longer available") para chaves novas. Os aliases "-latest" migram sozinhos
-# conforme o Google atualiza, então envelhecem melhor que IDs fixos.
+# ("no longer available") para chaves novas — reconfirmado nesta medição, 0/6.
+# Os aliases "-latest" migram sozinhos conforme o Google atualiza, então
+# envelhecem melhor que IDs fixos; por isso flash-lite-latest fecha a lista.
+# Em contrapartida, um ID "-preview" pode ser aposentado sem aviso: se o
+# 3-flash-preview começar a responder 404, `_is_overloaded_error` trata o 404
+# como motivo de troca e a chamada cai para o próximo — o custo é uma tentativa.
 # Sobrescrevível por ambiente: GEMINI_MODELS="modelo1,modelo2,...".
 GEMINI_MODELS          = [m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()] or [
-    "gemini-flash-latest",    # primário: mais rápido dos aprovados, flash estável mais recente
-    "gemini-3.6-flash",       # fallback: flash novo explícito
-    "gemini-pro-latest",      # fallback: maior acurácia quando os flash falham
-    "gemini-3.1-flash-lite",  # último recurso: leve/barato, alta disponibilidade
+    "gemini-3.5-flash",        # primário: flash COMPLETO, 16/16 e pior chamada em 3,5s
+    "gemini-3-flash-preview",  # fallback: o outro flash completo estável, pool distinto
+    "gemini-3.5-flash-lite",   # fallback: o mais rápido e o de latência mais previsível
+    "gemini-flash-lite-latest",  # último recurso: alias que migra sozinho, 16/16
 ]
 GEMINI_MODEL           = GEMINI_MODELS[0]
 
@@ -91,8 +112,11 @@ GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (tr
 # obsoleta. O freshness guard impede o clique errado, mas cada análise perdida
 # é uma rodada jogada fora.
 #
-# 30 s cobre com folga o modelo mais lento da lista (pro-latest, 23,3 s medidos
-# — ver o comentário de GEMINI_MODELS) sem esticar a janela de obsolescência.
+# 30 s cobre com MUITA folga os modelos da lista atual (pior chamada medida:
+# 4,1 s no 3-flash-preview — ver o comentário de GEMINI_MODELS). A folga é
+# proposital: o teto não está aqui para cortar chamada lenta, e sim para
+# denunciar pool saturado. Foi exatamente assim que pro-latest, flash-latest e
+# 3.6-flash saíram da lista — estouraram o teto em vez de responder.
 # Ajustável por ambiente para diagnóstico, com piso de 1 s.
 try:
     GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "30000") or "30000"))

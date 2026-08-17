@@ -153,10 +153,35 @@ def test_sucesso_no_primeiro_modelo_faz_uma_chamada(monkeypatch):
 
 
 def test_ordem_dos_modelos_preservada():
-    """A ordem veio de medicao de latencia; este commit nao a altera."""
-    assert solver.GEMINI_MODELS[0] == "gemini-flash-latest"
+    """A ordem veio de medicao (17/08/2026); este commit nao a altera."""
+    assert solver.GEMINI_MODELS == [
+        "gemini-3.5-flash",
+        "gemini-3-flash-preview",
+        "gemini-3.5-flash-lite",
+        "gemini-flash-lite-latest",
+    ]
     assert solver.GEMINI_MODEL == solver.GEMINI_MODELS[0]
     assert len(solver.GEMINI_MODELS) == 4
+
+
+# Modelos reprovados por MEDICAO — nao voltam ao caminho quente sem nova medida.
+# Ou o pool vive saturado (timeout/503 na maioria das chamadas) ou o ID ja foi
+# aposentado pelo Google (404). Ver o comentario de GEMINI_MODELS em solver.py.
+MODELOS_REPROVADOS = (
+    "gemini-pro-latest",       # 3/16 — 11 timeouts
+    "gemini-3.1-pro-preview",  # 4/16 — 12 timeouts
+    "gemini-flash-latest",     # 3/16 — 9 timeouts, 4x 503
+    "gemini-3.6-flash",        # 3/8
+    "gemini-3.7-flash",        # 2/8
+    "gemini-2.5-flash",        # 0/6 — 404 "no longer available"
+    "gemini-2.0-flash",        # 404 "no longer available"
+)
+
+
+def test_nenhum_modelo_reprovado_no_caminho_quente():
+    """Esta automacao nao roda com modelo instavel: a lista padrao e so aprovado."""
+    reprovados_na_lista = [m for m in solver.GEMINI_MODELS if m in MODELOS_REPROVADOS]
+    assert reprovados_na_lista == []
 
 
 def test_pior_caso_de_chamadas_e_um_por_modelo(monkeypatch):

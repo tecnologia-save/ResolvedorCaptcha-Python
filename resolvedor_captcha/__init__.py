@@ -1,7 +1,9 @@
 """Resolvedor de hCaptcha.
 
-Alem de resolver, o pacote expoe INSPECAO: `captcha_presente` diz se ha desafio
-e `detectar_tipo_captcha` diz de qual tipo ele e. Quem integra usa isso para
+Alem de resolver, o pacote expoe INSPECAO: `captcha_presente` diz se ha desafio,
+`detectar_tipo_captcha` diz de qual tipo ele e, e `abrir_desafio` abre o desafio
+a partir do widget "Sou humano" SEM resolve-lo — abrir nao e resolver. Quem
+integra usa isso para
 decidir POLITICA POR TIPO — nem todo fluxo autoriza resolucao automatica de
 todos os formatos.
 """
@@ -13,6 +15,7 @@ from .solver import (
     TIPO_IMAGEM,
     TIPO_NENHUM,
     TIPOS_CONHECIDOS,
+    abrir_desafio,
     captcha_presente,
     cell_to_viewport,
     detectar_tipo_captcha,
@@ -28,6 +31,7 @@ __all__ = [
     "TIPO_GRADE_FUSED",
     "TIPO_IMAGEM",
     "TIPO_NENHUM",
+    "abrir_desafio",
     "captcha_presente",
     "cell_to_viewport",
     "detectar_tipo_captcha",

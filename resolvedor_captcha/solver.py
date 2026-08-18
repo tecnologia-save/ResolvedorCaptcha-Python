@@ -838,7 +838,7 @@ def captcha_presente(page) -> bool:
     try:
         if _challenge_visible(page):
             return True
-        return bool(page.locator(CHECKBOX_SEL).first.is_visible())
+        return _indice_checkbox_visivel(page) is not None
     except Exception:  # noqa: BLE001 — indeterminado é "não detectei"
         return False
 
@@ -1756,12 +1756,62 @@ INICIO_CHECKBOX = "checkbox"
 INICIO_NENHUM = "nenhum"
 
 
-def _checkbox_visivel(page) -> bool:
-    """Inspeção BARATA: o widget 'Sou humano' está na tela? Sem esperar."""
+def _indice_checkbox_visivel(page) -> int | None:
+    """Índice do iframe de checkbox VISÍVEL, ou None. Resolução ÚNICA.
+
+    O hCaptcha mantém mais de um iframe de widget: o da etapa anterior fica
+    para trás, oculto, e o novo vem depois na ordem do documento. `.first`
+    respondia pelo obsoleto e concluía "não há captcha" com um widget real
+    esperando interação na tela.
+
+    Política determinística: o PRIMEIRO visível em ordem de documento. Índice, e
+    não booleano, porque quem clica precisa clicar EXATAMENTE o que foi
+    detectado — detectar um iframe e clicar outro seria trocar um erro por
+    outro.
+    """
     try:
-        return page.locator(CHECKBOX_SEL).first.is_visible()
+        loc = page.locator(CHECKBOX_SEL)
+        total = loc.count()
     except Exception:  # noqa: BLE001 — não observar é não estar lá
+        return None
+    for i in range(total):
+        try:
+            if loc.nth(i).is_visible():
+                return i
+        except Exception:  # noqa: BLE001, S112 — um iframe ilegível não
+            continue       # invalida os outros
+    return None
+
+
+def _checkbox_visivel(page) -> bool:
+    """Inspeção BARATA: há widget 'Sou humano' na tela? Sem esperar."""
+    return _indice_checkbox_visivel(page) is not None
+
+
+def abrir_desafio(page, timeout_ms: int = 10_000) -> bool:
+    """Abre o desafio a partir do widget 'Sou humano'. NÃO resolve nada.
+
+    Existe para quem precisa CLASSIFICAR o desafio antes de decidir se pode
+    resolvê-lo: o portal Serviços RF aplica política por tipo na representação
+    de CNPJ, e com o widget ainda fechado não há tipo nenhum a classificar —
+    `detectar_tipo_captcha` só enxerga desafio ABERTO.
+
+    Chamar `solve_hcaptcha` só para abrir violaria essa política, porque ele
+    resolveria qualquer tipo. Aqui a fronteira é explícita: abrir não é
+    resolver, e nenhuma chamada ao modelo acontece.
+
+    True quando há desafio ativo ao final — inclusive se já havia antes.
+    """
+    if _get_challenge_frame(page) is not None:
+        return True
+    if not _click_checkbox_widget(page, timeout_ms=timeout_ms):
         return False
+    deadline = time.time() + timeout_ms / 1000
+    while time.time() < deadline:
+        if _get_challenge_frame(page) is not None:
+            return True
+        time.sleep(0.2)
+    return False
 
 
 def _aguardar_desafio_ou_checkbox(page, timeout_ms: int = 10_000) -> str:
@@ -1788,17 +1838,24 @@ def _aguardar_desafio_ou_checkbox(page, timeout_ms: int = 10_000) -> str:
 
 
 def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
-    """Aguarda o checkbox 'Sou humano' aparecer e clica nele."""
-    print("    [captcha] Aguardando checkbox hCaptcha (até 10 s)...")
-    try:
-        page.locator(CHECKBOX_SEL).first.wait_for(state="visible", timeout=timeout_ms)
-    except Exception:
+    """Aguarda o checkbox 'Sou humano' aparecer e clica NELE.
+
+    Clica o iframe cujo índice foi comprovadamente visível — não `.first`.
+    Detectar um e clicar outro deixaria o fluxo parado num widget obsoleto.
+    """
+    indice = _indice_checkbox_visivel(page)
+    if indice is None:
+        deadline = time.time() + timeout_ms / 1000
+        while indice is None and time.time() < deadline:
+            time.sleep(0.2)
+            indice = _indice_checkbox_visivel(page)
+    if indice is None:
         print("    [captcha] Checkbox não detectado — pode ser desafio direto.")
         return False
 
     for tentativa in range(1, 4):
         try:
-            cf = page.frame_locator(CHECKBOX_SEL)
+            cf = page.frame_locator(CHECKBOX_SEL).nth(indice)
             cf.locator("#checkbox").first.click(timeout=3_000)
             print(f"    [captcha] Checkbox clicado (tentativa {tentativa}/3).")
             page.wait_for_timeout(1_000)

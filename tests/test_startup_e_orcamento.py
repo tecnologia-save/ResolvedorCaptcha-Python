@@ -25,38 +25,83 @@ from resolvedor_captcha import solver
 # ── Pagina falsa ─────────────────────────────────────────────────────────────
 
 class _Locator:
-    def __init__(self, visivel):
-        self._visivel = visivel
+    """Locator com N iframes de checkbox, cada um com sua visibilidade."""
+
+    def __init__(self, visiveis, idx=None):
+        # visiveis: lista de bool, um por iframe
+        self._visiveis = list(visiveis)
+        self._idx = idx
 
     @property
     def first(self):
-        return self
+        return self.nth(0)
+
+    def nth(self, i):
+        return _Locator(self._visiveis, idx=i)
+
+    def count(self):
+        return len(self._visiveis)
 
     def is_visible(self):
-        return self._visivel
+        i = 0 if self._idx is None else self._idx
+        return bool(self._visiveis[i]) if i < len(self._visiveis) else False
 
     def wait_for(self, **_k):
-        if not self._visivel:
+        if not any(self._visiveis):
             raise TimeoutError("nao apareceu")
 
     def click(self, **_k):
         pass
 
 
+class _FrameLocator:
+    """`frame_locator(...).nth(i)` — registra QUAL iframe foi clicado."""
+
+    def __init__(self, pagina, idx=None):
+        self.pagina, self.idx = pagina, idx
+
+    def nth(self, i):
+        return _FrameLocator(self.pagina, idx=i)
+
+    @property
+    def first(self):
+        return self
+
+    def locator(self, _sel):
+        return _BotaoDoFrame(self.pagina, self.idx)
+
+
+class _BotaoDoFrame:
+    def __init__(self, pagina, idx):
+        self.pagina, self.idx = pagina, idx
+
+    @property
+    def first(self):
+        return self
+
+    def click(self, **_k):
+        self.pagina.clicados.append(self.idx)
+
+
 class _Pagina:
     """So o que o inicio da resolucao consulta."""
 
-    def __init__(self, *, desafio=False, checkbox=False, desafio_apos=None):
+    def __init__(self, *, desafio=False, checkbox=False, desafio_apos=None,
+                 checkboxes=None):
         self.desafio = desafio
-        self.checkbox = checkbox
+        # `checkboxes` = visibilidade de cada iframe; `checkbox` e o atalho de
+        # um so.
+        self.checkboxes = (list(checkboxes) if checkboxes is not None
+                           else ([True] if checkbox else []))
+        self.clicados = []
         self.desafio_apos = desafio_apos     # aparece apos N consultas
         self.consultas_de_desafio = 0
 
     def locator(self, _sel):
-        return _Locator(self.checkbox)
+        return _Locator(self.checkboxes)
 
     def frame_locator(self, _sel):
-        return self
+        return _FrameLocator(self)
 
     def wait_for_timeout(self, _ms):
         pass
@@ -307,30 +352,40 @@ def test_o_freshness_guard_continua_no_lugar():
 # mecanismo existe e produz exatamente aquele sintoma silencioso.
 
 class _CheckboxLocator:
-    def __init__(self, existe, visivel):
-        self._existe = existe
-        self._visivel = visivel
+    """N iframes de checkbox, cada um com sua propria visibilidade."""
+
+    def __init__(self, visiveis, idx=None):
+        self._visiveis = list(visiveis)
+        self._idx = idx
 
     @property
     def first(self):
-        return self
+        return self.nth(0)
+
+    def nth(self, i):
+        return _CheckboxLocator(self._visiveis, idx=i)
 
     def count(self):
-        return 1 if self._existe else 0
+        return len(self._visiveis)
 
     def is_visible(self):
-        return self._visivel and self._existe
+        i = 0 if self._idx is None else self._idx
+        return bool(self._visiveis[i]) if i < len(self._visiveis) else False
 
 
 class _PaginaCaptcha:
     def __init__(self, *, challenge=False, checkbox_existe=False,
-                 checkbox_visivel=False):
+                 checkbox_visivel=False, checkboxes=None):
         self.challenge = challenge
-        self.checkbox_existe = checkbox_existe
-        self.checkbox_visivel = checkbox_visivel
+        if checkboxes is not None:
+            self.checkboxes = list(checkboxes)
+        elif checkbox_existe:
+            self.checkboxes = [bool(checkbox_visivel)]
+        else:
+            self.checkboxes = []
 
     def locator(self, _sel):
-        return _CheckboxLocator(self.checkbox_existe, self.checkbox_visivel)
+        return _CheckboxLocator(self.checkboxes)
 
 
 @pytest.fixture
@@ -367,6 +422,116 @@ def test_challenge_ativo_vence_checkbox_oculto(challenge_conforme):
 def test_presenca_nao_se_apoia_mais_em_count():
     """Gate: `count() > 0` nao pode voltar a ser a prova."""
     fonte = inspect.getsource(solver.captcha_presente)
-    corpo = fonte[fonte.rindex('"""') + 3:]        # só o codigo, sem o docstring
+    corpo = fonte[fonte.rindex('"""') + 3:]        # so o codigo, sem o docstring
     assert "count()" not in corpo
-    assert "is_visible()" in corpo
+    assert "_indice_checkbox_visivel" in corpo
+
+
+# ══ 6 · Checkbox stale ANTES do atual — o `.first` de novo ══════════════════
+#
+# A correcao do 1.0.7 trocou `count() > 0` por `.first.is_visible()`, e isso
+# ainda erra no proprio cenario que a motivou: o hCaptcha mantem mais de um
+# iframe de widget, e o obsoleto pode vir PRIMEIRO na ordem do documento.
+# `.first` responde pelo oculto e conclui "nao ha captcha" com um widget real
+# esperando na tela.
+
+STALE_E_ATUAL = [False, True]      # [0] obsoleto e oculto, [1] atual e visivel
+
+
+def test_checkbox_stale_na_frente_nao_esconde_o_atual(challenge_conforme):
+    """RED A: o segundo iframe esta visivel — ha captcha."""
+    assert solver.captcha_presente(
+        _PaginaCaptcha(checkboxes=STALE_E_ATUAL)) is True
+
+
+def test_o_indice_devolvido_e_o_do_iframe_visivel(challenge_conforme):
+    assert solver._indice_checkbox_visivel(
+        _PaginaCaptcha(checkboxes=STALE_E_ATUAL)) == 1
+
+
+def test_todos_os_iframes_ocultos_nao_sao_captcha(challenge_conforme):
+    """RED D."""
+    assert solver.captcha_presente(
+        _PaginaCaptcha(checkboxes=[False, False])) is False
+    assert solver._indice_checkbox_visivel(
+        _PaginaCaptcha(checkboxes=[False, False])) is None
+
+
+def test_challenge_ativo_vence_checkbox_stale(challenge_conforme):
+    """RED E: desafio aberto decide antes de qualquer coisa sobre widgets."""
+    assert solver.captcha_presente(
+        _PaginaCaptcha(challenge=True, checkboxes=STALE_E_ATUAL)) is True
+
+
+def test_o_startup_ve_o_checkbox_atual_mesmo_com_stale_na_frente(pagina_observavel):
+    """RED B: o inicio responde CHECKBOX, e nao 'nenhum'."""
+    pagina = _Pagina(checkboxes=STALE_E_ATUAL)
+    assert solver._aguardar_desafio_ou_checkbox(pagina) == solver.INICIO_CHECKBOX
+
+
+def test_o_clique_acontece_no_iframe_detectado(pagina_observavel):
+    """RED C: detectar um iframe e clicar outro seria trocar um erro por outro."""
+    pagina = _Pagina(checkboxes=STALE_E_ATUAL)
+    assert solver._click_checkbox_widget(pagina) is True
+    assert pagina.clicados == [1]
+
+
+def test_o_clique_usa_o_primeiro_visivel_quando_ha_varios(pagina_observavel):
+    """Politica deterministica: primeiro visivel em ordem de documento."""
+    pagina = _Pagina(checkboxes=[False, True, True])
+    solver._click_checkbox_widget(pagina)
+    assert pagina.clicados == [1]
+
+
+def test_nenhuma_deteccao_de_checkbox_se_apoia_em_first():
+    """Gate: `.first` nao pode voltar a governar o widget."""
+    for funcao in (solver.captcha_presente, solver._checkbox_visivel,
+                   solver._indice_checkbox_visivel,
+                   solver._click_checkbox_widget):
+        fonte = inspect.getsource(funcao)
+        corpo = fonte[fonte.rindex('"""') + 3:] if '"""' in fonte else fonte
+        assert "CHECKBOX_SEL).first" not in corpo, funcao.__name__
+
+
+def test_as_tres_funcoes_usam_a_mesma_resolucao():
+    """Uma unica fonte de verdade sobre qual widget vale."""
+    for funcao in (solver.captcha_presente, solver._checkbox_visivel,
+                   solver._click_checkbox_widget):
+        assert "_indice_checkbox_visivel" in inspect.getsource(funcao), \
+            funcao.__name__
+
+
+# ══ 7 · `abrir_desafio` — abrir nao e resolver ══════════════════════════════
+
+def test_abrir_desafio_com_challenge_ja_ativo_nao_clica(pagina_observavel):
+    pagina = _Pagina(desafio=True, checkboxes=[True])
+    assert solver.abrir_desafio(pagina) is True
+    assert pagina.clicados == []
+
+
+def test_abrir_desafio_clica_o_widget_e_espera_o_challenge(pagina_observavel):
+    pagina = _Pagina(checkboxes=STALE_E_ATUAL, desafio_apos=1)
+    assert solver.abrir_desafio(pagina) is True
+    assert pagina.clicados == [1]
+
+
+def test_abrir_desafio_sem_widget_algum_e_falso(pagina_observavel):
+    assert solver.abrir_desafio(_Pagina(), timeout_ms=200) is False
+
+
+def test_abrir_desafio_nao_resolve_nada(monkeypatch, pagina_observavel):
+    """A fronteira e o ponto: nenhuma chamada ao modelo, nenhum tile clicado."""
+    def proibido(*_a, **_k):
+        raise AssertionError("abrir_desafio nao pode resolver")
+
+    monkeypatch.setattr(solver, "_gemini_call", proibido)
+    monkeypatch.setattr(solver, "_solve_grade", proibido)
+    monkeypatch.setattr(solver, "_solve_cartao_animal", proibido)
+    pagina = _Pagina(checkboxes=[True], desafio_apos=1)
+    assert solver.abrir_desafio(pagina) is True
+
+
+def test_abrir_desafio_e_publico():
+    import resolvedor_captcha as pacote
+    assert "abrir_desafio" in pacote.__all__
+    assert pacote.abrir_desafio is solver.abrir_desafio

@@ -46,6 +46,9 @@ class Captcha:
         self.ativo = True
         self.n_iframes = n_iframes      # o hCaptcha pre-carrega varios
         self.checkbox_presente = 0      # widget "Sou humano" ainda fechado
+        # Existir no DOM e estar VISIVEL sao coisas diferentes: o hCaptcha
+        # deixa iframes para tras. `None` = visivel se presente (o caso comum).
+        self.checkbox_visivel = None
         self.idx_ativo = idx_ativo
         self.tiles_clicados = []
         self.cliques_pixel = []
@@ -175,6 +178,11 @@ class FakeLocator:
             raise RuntimeError("timeout")
 
     def is_visible(self, timeout=None):
+        if self.seletor == solver.CHECKBOX_SEL:
+            if not self.captcha.checkbox_presente:
+                return False
+            visivel = self.captcha.checkbox_visivel
+            return True if visivel is None else bool(visivel)
         return bool(self.captcha.ativo)
 
     def fill(self, texto):

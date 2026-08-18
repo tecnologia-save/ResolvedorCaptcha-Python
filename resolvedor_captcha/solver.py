@@ -825,13 +825,20 @@ def captcha_presente(page) -> bool:
     enunciado e submit habilitado) e o widget "Sou humano" ainda fechado
     (`frame=checkbox`) — dos dois lados o fluxo está parado esperando alguém.
 
+    O checkbox precisa estar VISÍVEL. Existir no DOM não basta: o hCaptcha
+    deixa seus iframes para trás, e num fluxo onde um captcha antecede outro —
+    login e depois representação, no portal Serviços RF — o widget da etapa
+    anterior continua no documento. `count() > 0` chamava isso de "captcha
+    aguardando interação" e mandava o integrador para um ramo de captcha que
+    não existia mais.
+
     Nunca levanta: o chamador está justamente perguntando sobre um estado
     incerto, e uma exceção aqui viraria ruído no diagnóstico dele.
     """
     try:
         if _challenge_visible(page):
             return True
-        return page.locator(CHECKBOX_SEL).count() > 0
+        return bool(page.locator(CHECKBOX_SEL).first.is_visible())
     except Exception:  # noqa: BLE001 — indeterminado é "não detectei"
         return False
 

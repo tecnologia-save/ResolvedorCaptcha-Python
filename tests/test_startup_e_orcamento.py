@@ -293,3 +293,80 @@ def test_o_freshness_guard_continua_no_lugar():
                  "_capturar_desafio"):
         assert hasattr(solver, nome), nome
     assert "_desafio_ainda_e_o_mesmo" in inspect.getsource(solver._solve_grade)
+
+
+# ══ 5 · Presenca de captcha exige VISIBILIDADE ══════════════════════════════
+#
+# `captcha_presente` respondia `page.locator(CHECKBOX_SEL).count() > 0`: existir
+# no DOM bastava. O hCaptcha deixa seus iframes para tras, e no portal Servicos
+# RF um captcha antecede o outro — login e depois representacao. O widget da
+# etapa anterior continua no documento, e o integrador era mandado para um ramo
+# de captcha que nao existia mais.
+#
+# Nao ha prova de que foi isso que derrubou a run de 16:56; ha prova de que o
+# mecanismo existe e produz exatamente aquele sintoma silencioso.
+
+class _CheckboxLocator:
+    def __init__(self, existe, visivel):
+        self._existe = existe
+        self._visivel = visivel
+
+    @property
+    def first(self):
+        return self
+
+    def count(self):
+        return 1 if self._existe else 0
+
+    def is_visible(self):
+        return self._visivel and self._existe
+
+
+class _PaginaCaptcha:
+    def __init__(self, *, challenge=False, checkbox_existe=False,
+                 checkbox_visivel=False):
+        self.challenge = challenge
+        self.checkbox_existe = checkbox_existe
+        self.checkbox_visivel = checkbox_visivel
+
+    def locator(self, _sel):
+        return _CheckboxLocator(self.checkbox_existe, self.checkbox_visivel)
+
+
+@pytest.fixture
+def challenge_conforme(monkeypatch):
+    monkeypatch.setattr(solver, "_challenge_visible", lambda p: p.challenge)
+
+
+def test_challenge_ativo_e_captcha_presente(challenge_conforme):
+    assert solver.captcha_presente(_PaginaCaptcha(challenge=True)) is True
+
+
+def test_checkbox_visivel_e_captcha_presente(challenge_conforme):
+    assert solver.captcha_presente(
+        _PaginaCaptcha(checkbox_existe=True, checkbox_visivel=True)) is True
+
+
+def test_checkbox_existente_porem_oculto_nao_e_captcha(challenge_conforme):
+    """O caso do iframe deixado para tras pelo captcha anterior."""
+    assert solver.captcha_presente(
+        _PaginaCaptcha(checkbox_existe=True, checkbox_visivel=False)) is False
+
+
+def test_pagina_sem_captcha_algum(challenge_conforme):
+    assert solver.captcha_presente(_PaginaCaptcha()) is False
+
+
+def test_challenge_ativo_vence_checkbox_oculto(challenge_conforme):
+    """Desafio aberto decide antes de qualquer coisa sobre o widget."""
+    assert solver.captcha_presente(
+        _PaginaCaptcha(challenge=True, checkbox_existe=True,
+                       checkbox_visivel=False)) is True
+
+
+def test_presenca_nao_se_apoia_mais_em_count():
+    """Gate: `count() > 0` nao pode voltar a ser a prova."""
+    fonte = inspect.getsource(solver.captcha_presente)
+    corpo = fonte[fonte.rindex('"""') + 3:]        # só o codigo, sem o docstring
+    assert "count()" not in corpo
+    assert "is_visible()" in corpo

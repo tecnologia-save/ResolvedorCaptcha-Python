@@ -202,6 +202,19 @@ def test_captcha_presente_detecta_o_widget_checkbox_fechado(page, captcha):
     assert solver.captcha_presente(page) is True
 
 
+def test_captcha_presente_ignora_checkbox_deixado_para_tras(page, captcha):
+    """Iframe do captcha ANTERIOR: existe no DOM, nao esta na tela.
+
+    No portal Servicos RF um captcha antecede o outro — login e depois
+    representacao. Chamar o widget da etapa anterior de "captcha aguardando
+    interacao" manda o integrador para um ramo que nao existe mais.
+    """
+    captcha.resolver()
+    captcha.checkbox_presente = 1
+    captcha.checkbox_visivel = False
+    assert solver.captcha_presente(page) is False
+
+
 def test_captcha_presente_nao_chama_o_solver(page, captcha, monkeypatch):
     """DETECCAO nao pode virar resolucao: nada de gastar chamada ao modelo
     nem clicar tile que ninguem pediu."""

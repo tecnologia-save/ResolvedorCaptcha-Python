@@ -9,7 +9,7 @@ name = "ResolvedorCaptcha"
 # pip considera o pacote ja satisfeito e MANTEM o antigo, por mais que o SHA do
 # pin mude. Foi assim que o freshness guard nao chegou ao Edge. Mudou codigo
 # aqui, sobe o PATCH.
-version = "1.0.5"
+version = "1.0.6"
 description = "Resolvedor de hCaptcha via Gemini — usado pelas bibliotecas de login"
 requires-python = ">=3.10"
 # FONTE UNICA das dependencias de runtime.

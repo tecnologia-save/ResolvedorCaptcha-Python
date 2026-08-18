@@ -21,7 +21,7 @@ import json
 import os
 import re
 import time
-from typing import Optional
+from typing import NamedTuple, Optional
 
 try:
     from PIL import Image, ImageDraw, ImageFont
@@ -470,7 +470,49 @@ def _get_client(api_key: str):
     return _client_cache
 
 
-def _make_config(schema: dict, model: str = GEMINI_MODEL):
+class PoliticaLatencia(NamedTuple):
+    """Orçamento de tempo de UMA chamada a `solve_hcaptcha`. Sem estado global.
+
+    Existe porque consumidores diferentes têm paciências diferentes. Na
+    representação de CNPJ o portal impõe seu próprio ritmo, e uma resolução que
+    se estende por minutos chega tarde demais para servir; no captcha de login
+    o padrão de 30 s continua sendo o certo.
+
+    `fim` é um instante MONOTÔNICO. O timeout que vai para a request é sempre
+    `min(timeout_ms, tempo restante)` — com 8 s de orçamento sobrando, nenhuma
+    chamada individual pode reservar 30 s.
+    """
+
+    timeout_ms: int = GEMINI_TIMEOUT_MS
+    fim: float | None = None
+
+    @property
+    def restante_ms(self) -> int:
+        """Milissegundos até o fim do orçamento. `-1` = sem orçamento total."""
+        if self.fim is None:
+            return -1
+        return int(max(0.0, self.fim - time.monotonic()) * 1000)
+
+    @property
+    def esgotado(self) -> bool:
+        return self.fim is not None and self.restante_ms <= 0
+
+    def timeout_efetivo_ms(self) -> int:
+        """O teto real desta request: nunca além do que sobra do orçamento."""
+        if self.fim is None:
+            return self.timeout_ms
+        return max(1, min(self.timeout_ms, self.restante_ms))
+
+
+POLITICA_PADRAO = PoliticaLatencia()
+
+
+def _politica(politica) -> PoliticaLatencia:
+    """`None` significa o comportamento de sempre — nada de default implícito."""
+    return politica if isinstance(politica, PoliticaLatencia) else POLITICA_PADRAO
+
+
+def _make_config(schema: dict, model: str = GEMINI_MODEL, timeout_ms: int | None = None):
     """GenerateContentConfig com response_schema e thinking conforme THINKING_BUDGET.
 
     THINKING_BUDGET == 0 (padrão): NÃO enviamos thinking_config — o modelo usa seu
@@ -497,7 +539,8 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL):
     # Teto por tentativa. Fica na config, e não no cliente, porque o cliente é
     # cacheado no módulo: aqui o limite acompanha cada chamada e é inspecionável.
     try:
-        kwargs["http_options"] = _gt.HttpOptions(timeout=GEMINI_TIMEOUT_MS)
+        kwargs["http_options"] = _gt.HttpOptions(
+            timeout=GEMINI_TIMEOUT_MS if timeout_ms is None else timeout_ms)
     except Exception:  # noqa: BLE001, S110 — SDK antigo sem HttpOptions
         pass
     try:
@@ -601,7 +644,8 @@ def _diagnostico_erro(e, modelo: str | None = None) -> str:
     return " | ".join(partes)
 
 
-def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
+def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
+                 politica: PoliticaLatencia | None = None) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
     Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
@@ -609,14 +653,22 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
     lista. Retorna o JSON já parseado; levanta RuntimeError se todos falharem.
     """
     client = _get_client(api_key)
+    politica = _politica(politica)
     last_exc = None
     for mi, model in enumerate(GEMINI_MODELS):
+        if politica.esgotado:
+            # Orçamento acabou: tentar o próximo modelo só adiaria o mesmo
+            # desfecho, agora com o screenshot ainda mais velho.
+            print(f"    [captcha/{tag}] orçamento de tempo esgotado — "
+                  "encerrando a cadeia de modelos.")
+            break
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
             try:
                 resp = client.models.generate_content(
                     model=model,
                     contents=contents,
-                    config=_make_config(schema, model),
+                    config=_make_config(schema, model,
+                                        timeout_ms=politica.timeout_efetivo_ms()),
                 )
                 if mi > 0:
                     print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
@@ -632,7 +684,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str) -> dict:
                 # `flash-latest 1/2: 503` e sucesso imediato no modelo seguinte.
                 if _is_overloaded_error(e):
                     break
-                if attempt < GEMINI_TRIES_PER_MODEL:
+                if attempt < GEMINI_TRIES_PER_MODEL and not politica.esgotado:
                     time.sleep(min(2 ** attempt, 8))
         # Esgotou as tentativas neste modelo.
         if not _is_overloaded_error(last_exc):
@@ -1393,7 +1445,8 @@ def _limpar_texto(valor, max_len: int = 200) -> str:
 # Chamadas ao Gemini
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
+def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
+                  politica: PoliticaLatencia | None = None) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
     png = _shrink_png(png)
     if ref_img:
@@ -1408,7 +1461,7 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str) -> dict:
             _gt.Part.from_bytes(data=png, mime_type="image/png"),
             _PROMPT_GRADE,
         ]
-    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade")
+    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade", politica)
 
 
 _PROMPT_GRADE_FUSED = """\
@@ -1464,7 +1517,8 @@ Em caso de duvida razoavel: INCLUA o tile.
 """
 
 
-def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str) -> dict:
+def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str,
+                        politica: PoliticaLatencia | None = None) -> dict:
     """Grade fused: envia iframe completo (contexto) + tiles recortados com overlay 3x3 → Gemini."""
     iframe_png = _shrink_png(iframe_png)
     tiles_png  = _shrink_png(tiles_png)
@@ -1473,10 +1527,11 @@ def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str) -> di
         _gt.Part.from_bytes(data=tiles_png,  mime_type="image/png"),
         _PROMPT_GRADE_FUSED,
     ]
-    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade_fused")
+    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade_fused", politica)
 
 
-def _gemini_grid(png: bytes, instrucao: str, api_key: str) -> dict:
+def _gemini_grid(png: bytes, instrucao: str, api_key: str,
+                 politica: PoliticaLatencia | None = None) -> dict:
     """Imagem+grid → Gemini → {instruction, action, click_positions, confidence}."""
     prompt = _PROMPT_GRID_TMPL.format(
         cols=GRID_COLS,
@@ -1489,7 +1544,7 @@ def _gemini_grid(png: bytes, instrucao: str, api_key: str) -> dict:
         _gt.Part.from_bytes(data=png, mime_type="image/png"),
         prompt,
     ]
-    return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid")
+    return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid", politica)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -1688,6 +1743,43 @@ def _submit_captcha(page) -> bool:
 # Checkbox widget
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Estados possíveis no INÍCIO de uma resolução. Vocabulário fechado.
+INICIO_DESAFIO = "desafio"
+INICIO_CHECKBOX = "checkbox"
+INICIO_NENHUM = "nenhum"
+
+
+def _checkbox_visivel(page) -> bool:
+    """Inspeção BARATA: o widget 'Sou humano' está na tela? Sem esperar."""
+    try:
+        return page.locator(CHECKBOX_SEL).first.is_visible()
+    except Exception:  # noqa: BLE001 — não observar é não estar lá
+        return False
+
+
+def _aguardar_desafio_ou_checkbox(page, timeout_ms: int = 10_000) -> str:
+    """Observa os DOIS estados dentro do MESMO prazo, e devolve o que vier.
+
+    Antes o início era serial: esperava-se o checkbox por até 10 s e só depois
+    se procurava o desafio. Numa grade que já vem aberta — sem checkbox nenhum —
+    isso custava os 10 s inteiros antes da primeira classificação, e numa
+    execução real o desafio só terminou perto de um minuto e meio depois de
+    aberto.
+
+    Desafio ativo tem prioridade sobre checkbox: se o desafio já está na tela,
+    clicar num widget antigo não adianta nada.
+    """
+    deadline = time.time() + timeout_ms / 1000
+    while True:
+        if _get_challenge_frame(page) is not None:
+            return INICIO_DESAFIO
+        if _checkbox_visivel(page):
+            return INICIO_CHECKBOX
+        if time.time() >= deadline:
+            return INICIO_NENHUM
+        time.sleep(0.2)
+
+
 def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
     """Aguarda o checkbox 'Sou humano' aparecer e clica nele."""
     print("    [captcha] Aguardando checkbox hCaptcha (até 10 s)...")
@@ -1830,7 +1922,8 @@ def _frame_click_at_pct(frame, idx_alvo: int) -> Optional[str]:
         return None
 
 
-def _gemini_cartao_animal(frames: list, api_key: str) -> int:
+def _gemini_cartao_animal(frames: list, api_key: str,
+                          politica: PoliticaLatencia | None = None) -> int:
     """Analisa sequência de frames e retorna o índice (0-3) da carta com animal único.
 
     Envia até 20 frames ao Gemini com prompt que explica a animação sequencial.
@@ -1863,7 +1956,8 @@ def _gemini_cartao_animal(frames: list, api_key: str) -> int:
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:
             # _gemini_call já tenta todos os modelos (fallback em sobrecarga 503).
-            result = _gemini_call(contents, _SCHEMA_CARTAO_ANIMAL, api_key, "cartao")
+            result = _gemini_call(contents, _SCHEMA_CARTAO_ANIMAL, api_key,
+                                  "cartao", politica)
         except Exception as e:
             print(f"    [captcha/cartao] Gemini erro tentativa {attempt} | "
                   f"{_diagnostico_erro(e)}")
@@ -2057,7 +2151,8 @@ def _clicar_posicao_cartao(page, idx_alvo: int) -> bool:
         return False
 
 
-def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3) -> bool:
+def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3,
+                         politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha 'Selecione o cartão com um animal diferente' (grid 2×2 animado).
 
     Estratégia:
@@ -2081,7 +2176,7 @@ def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3) -> bool:
             continue
 
         # ── 2. Gemini identifica a carta diferente ────────────────────────────
-        idx_alvo = _gemini_cartao_animal(frames, api_key)
+        idx_alvo = _gemini_cartao_animal(frames, api_key, politica)
 
         if not (0 <= idx_alvo <= 3):
             print("    [captcha/cartao] Não foi possível identificar carta diferente.")
@@ -2107,7 +2202,8 @@ def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3) -> bool:
     return False
 
 
-def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
+def _solve_grade(page, api_key: str, max_rounds: int = 5,
+                 politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha de grade 3x3."""
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
@@ -2153,7 +2249,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
                 continue
 
             try:
-                result = _gemini_grade(png, ref_img, api_key)
+                result = _gemini_grade(png, ref_img, api_key, politica)
             except Exception as e:
                 print(f"    [captcha/grade] Gemini erro (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")
@@ -2195,7 +2291,8 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5) -> bool:
     return False
 
 
-def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
+def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
+                       politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha grade 3×3 com imagem fundida (tiles não separados no DOM).
 
     Estratégia de alta assertividade:
@@ -2295,11 +2392,11 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
             try:
                 if tiles_png:
                     # Envia iframe completo + recorte com overlay → prompt especializado
-                    result = _gemini_grade_fused(iframe_png, tiles_png, api_key)
+                    result = _gemini_grade_fused(iframe_png, tiles_png, api_key, politica)
                 else:
                     # Fallback: só o iframe, prompt genérico de grade
                     ref_img = _get_reference_image_bytes(page)
-                    result = _gemini_grade(iframe_png, ref_img, api_key)
+                    result = _gemini_grade(iframe_png, ref_img, api_key, politica)
             except Exception as e:
                 print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")
@@ -2361,7 +2458,8 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5) -> bool:
     return False
 
 
-def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
+def _solve_imagem(page, api_key: str, max_rounds: int = 5,
+                  politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha de imagem completa com grid 20x20."""
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
@@ -2390,7 +2488,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
         print(f"    [captcha/imagem] Screenshot com grid: {len(png_grid) // 1024} KB")
 
         try:
-            result = _gemini_grid(png_grid, instrucao, api_key)
+            result = _gemini_grid(png_grid, instrucao, api_key, politica)
         except Exception as e:
             print(f"    [captcha/imagem] Gemini falhou | {_diagnostico_erro(e)}")
             continue
@@ -2442,21 +2540,48 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5) -> bool:
 # Ponto de entrada público
 # ──────────────────────────────────────────────────────────────────────────────
 
-def solve_hcaptcha(page, max_rounds: int = 6) -> bool:
+def solve_hcaptcha(page, max_rounds: int = 6, *,
+                   gemini_timeout_ms: int | None = None,
+                   deadline_s: float | None = None) -> bool:
     """Resolve hCaptcha na página.
+
+    `gemini_timeout_ms` e `deadline_s` são o ORÇAMENTO DE TEMPO desta chamada.
+    `None` nos dois mantém o comportamento de sempre — nenhum consumidor existente
+    muda de política sem pedir. Quando informados, valem só aqui: nada de
+    variável de ambiente temporária, nada de estado global.
+
+    `deadline_s` é o teto TOTAL, e é ele que manda: o timeout que chega a cada
+    request é `min(gemini_timeout_ms, tempo restante)`. Esgotado o orçamento, a
+    resolução termina como NÃO CONCLUÍDA — de forma controlada, para quem chamou
+    reavaliar o estado da página em vez de esperar mais um minuto.
 
     Returns:
         True  — captcha resolvido ou ausente
-        False — não resolvido após max_rounds iterações
+        False — não resolvido no orçamento ou após max_rounds iterações
     """
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key or api_key.startswith("cole-"):
         raise RuntimeError("GEMINI_API_KEY não configurada no ambiente.")
 
-    # Clica checkbox "Sou humano" e aguarda desafio abrir
-    _click_checkbox_widget(page, timeout_ms=10_000)
+    politica = PoliticaLatencia(
+        timeout_ms=GEMINI_TIMEOUT_MS if gemini_timeout_ms is None else gemini_timeout_ms,
+        fim=None if deadline_s is None else time.monotonic() + deadline_s,
+    )
+
+    # Checkbox OU desafio, no mesmo prazo — o que aparecer primeiro. Uma grade
+    # já aberta começa a ser classificada de imediato.
+    inicio = _aguardar_desafio_ou_checkbox(page, timeout_ms=10_000)
+    if inicio == INICIO_NENHUM:
+        print("    [captcha] Nenhum captcha na página.")
+        return True
+    if inicio == INICIO_CHECKBOX:
+        # Já sabemos que está visível: o clique não precisa reesperar por ele.
+        _click_checkbox_widget(page, timeout_ms=2_000)
 
     for rnd in range(1, max_rounds + 1):
+        if politica.esgotado:
+            print("    [captcha] Orçamento de tempo esgotado — resolução não concluída.")
+            return False
         print(f"    [captcha] === Iteração {rnd}/{max_rounds} ===")
 
         timeout_det = 10_000 if rnd == 1 else 5_000
@@ -2467,13 +2592,13 @@ def solve_hcaptcha(page, max_rounds: int = 6) -> bool:
             return True
 
         if tipo == "grade":
-            ok = _solve_grade(page, api_key)
+            ok = _solve_grade(page, api_key, politica=politica)
         elif tipo == "grade_fused":
-            ok = _solve_grade_fused(page, api_key)
+            ok = _solve_grade_fused(page, api_key, politica=politica)
         elif tipo == "cartao_animal":
-            ok = _solve_cartao_animal(page, api_key)
+            ok = _solve_cartao_animal(page, api_key, politica=politica)
         else:
-            ok = _solve_imagem(page, api_key)
+            ok = _solve_imagem(page, api_key, politica=politica)
 
         if not ok:
             print(f"    [captcha] Iteração {rnd}: solver não resolveu. Próxima tentativa...")

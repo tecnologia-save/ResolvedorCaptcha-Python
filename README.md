@@ -298,10 +298,14 @@ desafio errado e, com ele, a sessão.
 
   | Ordem | Modelo | Papel |
   |-------|--------|-------|
-  | 1 | `gemini-3.5-flash` | Primário — flash completo, 16/16 na medição |
-  | 2 | `gemini-3-flash-preview` | Fallback — o outro flash completo estável, pool distinto |
-  | 3 | `gemini-3.5-flash-lite` | Fallback — o mais rápido e o de latência mais previsível |
-  | 4 | `gemini-flash-lite-latest` | Último recurso — alias que migra sozinho |
+  | 1 | `gemini-3.5-flash-lite` | Primário — 16/16, 2,2 s: o mais rápido e previsível |
+  | 2 | `gemini-3.5-flash` | Fallback — 16/16, 2,7 s: flash completo, pool distinto |
+  | 3 | `gemini-3.1-flash-lite` | Último recurso — 16/16, mas com cauda de 25,4 s |
+
+  Só **ID estável** no caminho quente: aliases `-latest` trocam de versão por
+  trás (o que roda deixa de ser o que foi medido) e IDs `-preview` podem ser
+  aposentados sem aviso. Isso custou duas cartas boas — `flash-lite-latest` e
+  `3-flash-preview`, ambas 16/16.
 
   > A família 2.x (`gemini-2.0-flash`, `gemini-2.5-flash`) responde 404
   > *"no longer available"* para chaves novas — não use.

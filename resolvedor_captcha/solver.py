@@ -65,21 +65,27 @@ except ImportError:
 #     modelo que só é alcançado quando os anteriores caem precisa ser o mais
 #     disponível, e o pro é justamente o menos.
 #   - flash-latest, 3.6-flash, 3.7-flash: os flash "de topo" seguem com o pool
-#     saturado — 503 e timeout são a regra, não o pico.
+#     saturado — 503 e timeout são a regra, não o pico. A run de 18/08/2026
+#     reconfirmou em produção: flash-latest com 503/ReadTimeout, 3.6-flash com
+#     504, pro-latest com 429. Voltar qualquer um deles ao caminho quente exige
+#     medição nova, não impressão de uma execução.
 #
 # NÃO usar a família 2.x: gemini-2.0-flash e gemini-2.5-flash respondem 404
 # ("no longer available") para chaves novas — reconfirmado nesta medição, 0/6.
-# Os aliases "-latest" migram sozinhos conforme o Google atualiza, então
-# envelhecem melhor que IDs fixos; por isso flash-lite-latest fecha a lista.
-# Em contrapartida, um ID "-preview" pode ser aposentado sem aviso: se o
-# 3-flash-preview começar a responder 404, `_is_overloaded_error` trata o 404
-# como motivo de troca e a chamada cai para o próximo — o custo é uma tentativa.
+#
+# O caminho quente é só de IDs ESTÁVEIS, e isso custou duas cartas boas:
+#   - "-latest" (flash-lite-latest, 16/16) sai porque o alias troca de versão
+#     por trás; o que roda em produção deixa de ser o que foi medido, e a
+#     medição é o único critério que esta lista tem;
+#   - "-preview" (3-flash-preview, 16/16) sai porque pode ser aposentado sem
+#     aviso. Se um ID fixo morrer, `_is_overloaded_error` trata o 404 como
+#     motivo de troca e a chamada cai para o próximo — o custo é uma tentativa.
+# Sobra uma cadeia de três, toda ela 16/16 na medição de 17/08/2026.
 # Sobrescrevível por ambiente: GEMINI_MODELS="modelo1,modelo2,...".
 GEMINI_MODELS          = [m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()] or [
-    "gemini-3.5-flash",        # primário: flash COMPLETO, 16/16 e pior chamada em 3,5s
-    "gemini-3-flash-preview",  # fallback: o outro flash completo estável, pool distinto
-    "gemini-3.5-flash-lite",   # fallback: o mais rápido e o de latência mais previsível
-    "gemini-flash-lite-latest",  # último recurso: alias que migra sozinho, 16/16
+    "gemini-3.5-flash-lite",   # primário: 16/16, 2,2s — o mais rápido e previsível
+    "gemini-3.5-flash",        # fallback: 16/16, 2,7s — flash COMPLETO, pool distinto
+    "gemini-3.1-flash-lite",   # último recurso: 16/16, mas com cauda de 25,4s
 ]
 GEMINI_MODEL           = GEMINI_MODELS[0]
 

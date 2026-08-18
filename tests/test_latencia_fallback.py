@@ -153,25 +153,96 @@ def test_sucesso_no_primeiro_modelo_faz_uma_chamada(monkeypatch):
 
 
 def test_ordem_dos_modelos_preservada():
-    """A ordem veio de medicao (17/08/2026); este commit nao a altera."""
+    """A ordem veio de medicao (17/08/2026), filtrada por IDs estaveis."""
     assert solver.GEMINI_MODELS == [
-        "gemini-3.5-flash",
-        "gemini-3-flash-preview",
         "gemini-3.5-flash-lite",
-        "gemini-flash-lite-latest",
+        "gemini-3.5-flash",
+        "gemini-3.1-flash-lite",
     ]
     assert solver.GEMINI_MODEL == solver.GEMINI_MODELS[0]
-    assert len(solver.GEMINI_MODELS) == 4
+    assert len(solver.GEMINI_MODELS) == 3
+
+
+# ── So ID estavel no caminho quente ──────────────────────────────────────────
+#
+# A run de 18/08/2026 rodou `flash-latest` (503/ReadTimeout), `3.6-flash` (504),
+# `pro-latest` (429) e `3.1-flash-lite` — que e exatamente a lista da 1.0.3. O
+# runtime estava com a versao anterior; a 1.0.4 ja tinha tirado os tres. O que
+# esta versao acrescenta e a REGRA, para nao depender de lembrar dela.
+
+def test_nenhum_alias_latest_no_caminho_quente():
+    """`-latest` troca de versao por tras: o que roda deixa de ser o medido."""
+    assert [m for m in solver.GEMINI_MODELS if m.endswith("-latest")] == []
+
+
+def test_nenhum_id_de_preview_no_caminho_quente():
+    """`-preview` pode ser aposentado sem aviso."""
+    assert [m for m in solver.GEMINI_MODELS if "preview" in m] == []
+
+
+def test_nenhum_modelo_pro_no_caminho_quente():
+    """Peso desnecessario para uma tarefa visual simples, e o pool menos
+    disponivel dos medidos — 3/16 e 4/16."""
+    assert [m for m in solver.GEMINI_MODELS if "pro" in m] == []
+
+
+def test_todo_modelo_do_caminho_quente_tem_medicao_de_imagem():
+    """Nenhum entra sem ter concluido chamada REAL com screenshot de captcha.
+
+    A confirmacao de entrada multimodal e por MEDICAO propria, nao por
+    documentacao: cada um destes fechou 16/16 na campanha de 17/08/2026, com
+    grade 3x3 + response_schema + thinking, acertando o gabarito.
+    """
+    medidos_com_imagem = {
+        "gemini-3.5-flash": "16/16 2,7s",
+        "gemini-3.5-flash-lite": "16/16 2,2s",
+        "gemini-3.1-flash-lite": "16/16 4,7s (pior 25,4s)",
+        "gemini-3-flash-preview": "16/16 3,1s",
+        "gemini-flash-lite-latest": "16/16 2,2s",
+    }
+    sem_medicao = [m for m in solver.GEMINI_MODELS if m not in medidos_com_imagem]
+    assert sem_medicao == []
+
+
+# ── Uma unica camada de retry ────────────────────────────────────────────────
+
+def test_o_sdk_nao_faz_retry_por_conta_propria():
+    """PROVA EXECUTAVEL de que nao ha retry em duas camadas.
+
+    `retry_args(None)` do google-genai devolve `stop_after_attempt(1)`, e o
+    cliente so ganha politica de retry se `http_options.retry_options` for
+    preenchido — o que nao fazemos, nem no cliente nem por requisicao. Logo a
+    aritmetica de tentativas e so a do solver, e o teto de tempo por tentativa
+    (`GEMINI_TIMEOUT_MS`) vale de verdade.
+
+    Se um dia o SDK passar a retentar por padrao, este teste quebra antes de a
+    conta dobrar em producao.
+    """
+    import tenacity
+    from google import genai
+    from google.genai import types as gt
+
+    api = genai.Client(api_key="chave-de-teste")._api_client
+    assert api._http_options.retry_options is None
+    assert isinstance(api._retry.stop, tenacity.stop_after_attempt)
+    assert api._retry.stop.max_attempt_number == 1
+    # E o http_options que NOS montamos tambem nao liga retry.
+    assert gt.HttpOptions(timeout=solver.GEMINI_TIMEOUT_MS).retry_options is None
+
+
+def test_pior_caso_de_tempo_e_um_timeout_por_modelo():
+    """Tres modelos x uma tentativa x 30s = 90s, e nao minutos."""
+    assert len(solver.GEMINI_MODELS) * solver.GEMINI_TIMEOUT_MS == 90_000
 
 
 # Modelos reprovados por MEDICAO — nao voltam ao caminho quente sem nova medida.
 # Ou o pool vive saturado (timeout/503 na maioria das chamadas) ou o ID ja foi
 # aposentado pelo Google (404). Ver o comentario de GEMINI_MODELS em solver.py.
 MODELOS_REPROVADOS = (
-    "gemini-pro-latest",       # 3/16 — 11 timeouts
+    "gemini-pro-latest",       # 3/16 — 11 timeouts; 429 na run de 18/08/2026
     "gemini-3.1-pro-preview",  # 4/16 — 12 timeouts
-    "gemini-flash-latest",     # 3/16 — 9 timeouts, 4x 503
-    "gemini-3.6-flash",        # 3/8
+    "gemini-flash-latest",     # 3/16 — 9 timeouts, 4x 503; 503/ReadTimeout na run
+    "gemini-3.6-flash",        # 3/8; 504 na run de 18/08/2026
     "gemini-3.7-flash",        # 2/8
     "gemini-2.5-flash",        # 0/6 — 404 "no longer available"
     "gemini-2.0-flash",        # 404 "no longer available"

@@ -19,12 +19,16 @@ from .solver import (
     captcha_presente,
     cell_to_viewport,
     detectar_tipo_captcha,
+    modelos_ativos,
+    preparar_modelos,
     solve_captcha,
     solve_hcaptcha,
 )
 
 __all__ = [
     "TIPOS_CONHECIDOS",
+    "preparar_modelos",
+    "modelos_ativos",
     "TIPO_CARTAO_ANIMAL",
     "TIPO_DESCONHECIDO",
     "TIPO_GRADE",

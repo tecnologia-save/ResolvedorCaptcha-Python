@@ -644,6 +644,115 @@ def _diagnostico_erro(e, modelo: str | None = None) -> str:
     return " | ".join(partes)
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Modelos ativos DESTA execução
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# `GEMINI_MODELS` é a ordem de preferência, medida e fixa. O que muda dentro de
+# uma execução é quais deles estão RESPONDENDO agora — e isso o código antes não
+# guardava em lugar nenhum.
+#
+# O efeito disso em produção: `_gemini_call` recomeçava do primeiro modelo a
+# CADA chamada. Um modelo com o pool saturado custava o timeout inteiro (30s),
+# caía para o alternativo, resolvia — e no captcha seguinte pagava os mesmos 30s
+# de novo. Numa execução real isso se repetiu em quase toda rodada de captcha,
+# com o mesmo modelo e o mesmo desfecho, sempre "descobrindo" o que já sabia.
+#
+# Agora a descoberta é lembrada: um modelo que falha por DISPONIBILIDADE sai da
+# lista quente e não é tentado outra vez nesta execução.
+_MODELOS_ATIVOS: list[str] = list(GEMINI_MODELS)
+_MODELOS_DESCARTADOS: dict[str, str] = {}
+
+
+def modelos_ativos() -> list[str]:
+    """Os modelos que esta execução ainda considera utilizáveis."""
+    return list(_MODELOS_ATIVOS)
+
+
+def _descartar_modelo(model: str, motivo: str) -> None:
+    """Tira `model` do caminho quente pelo resto da execução.
+
+    Nunca esvazia a lista: sem nenhum modelo não haveria o que tentar, e um
+    pool saturado costuma voltar. Se sobrou só ele, ele fica — pagar o timeout
+    é melhor do que não ter caminho nenhum.
+    """
+    if model not in _MODELOS_ATIVOS or len(_MODELOS_ATIVOS) <= 1:
+        return
+    _MODELOS_ATIVOS.remove(model)
+    _MODELOS_DESCARTADOS[model] = motivo
+    print(f"    [captcha] '{model}' fora do caminho quente nesta execução "
+          f"({motivo}). Restam: {', '.join(_MODELOS_ATIVOS)}")
+
+
+# A API RECUSA deadline abaixo de 10s: "Manually set deadline 8s is too short.
+# Minimum allowed deadline is 10s." — um 400 que a sondagem leria como
+# "modelo indisponivel", condenando todos eles por um erro nosso.
+TIMEOUT_MINIMO_API_MS = 10_000
+
+
+def preparar_modelos(api_key: str | None = None,
+                     timeout_ms: int = 12_000) -> list[str]:
+    """Sonda os modelos UMA vez e fixa os que responderam. Devolve a lista.
+
+    Feita para rodar no início da automação, antes do primeiro captcha: uma
+    pergunta trivial ("responda ok"), com teto de tempo curto e sem thinking.
+    O que interessa não é a resposta — é saber QUEM ATENDE, para que o primeiro
+    captcha da execução não seja o cobaia que descobre isso pagando 30s.
+
+    Nunca levanta e nunca esvazia a lista: sem chave, sem rede, ou com todos os
+    modelos mudos, a execução segue com a ordem original e a descoberta volta a
+    ser feita durante o uso — que é o comportamento de antes, e funciona.
+    """
+    global _MODELOS_ATIVOS
+    api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
+        print("    [captcha] sem GEMINI_API_KEY; sondagem de modelos pulada.")
+        return list(_MODELOS_ATIVOS)
+
+    try:
+        client = _get_client(api_key)
+    except Exception as e:
+        print(f"    [captcha] sondagem de modelos pulada ({type(e).__name__}).")
+        return list(_MODELOS_ATIVOS)
+
+    print("    [captcha] sondando os modelos do Gemini...")
+    vivos, mortos = [], []
+    for model in GEMINI_MODELS:
+        inicio = time.monotonic()
+        try:
+            client.models.generate_content(
+                model=model,
+                contents=["responda apenas: ok"],
+                config=_gt.GenerateContentConfig(
+                    http_options=_gt.HttpOptions(
+                        timeout=max(TIMEOUT_MINIMO_API_MS, timeout_ms)),
+                    max_output_tokens=8,
+                ),
+            )
+        except Exception as e:
+            mortos.append(model)
+            print(f"    [captcha]   {model}: indisponível "
+                  f"({_diagnostico_erro(e, model)})")
+            continue
+        gasto = time.monotonic() - inicio
+        vivos.append(model)
+        print(f"    [captcha]   {model}: ok ({gasto:.1f}s)")
+
+    if not vivos:
+        # Todos mudos agora não quer dizer todos mudos daqui a um minuto — e a
+        # sondagem é curta de propósito. Manter a lista original é o caminho
+        # seguro: o pior caso volta a ser o comportamento antigo.
+        print("    [captcha] nenhum modelo respondeu à sondagem; mantendo a "
+              "ordem original.")
+        return list(_MODELOS_ATIVOS)
+
+    _MODELOS_ATIVOS = vivos
+    for model in mortos:
+        _MODELOS_DESCARTADOS[model] = "não respondeu à sondagem inicial"
+    print(f"    [captcha] modelos desta execução: {', '.join(vivos)}")
+    return list(vivos)
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
@@ -655,7 +764,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     client = _get_client(api_key)
     politica = _politica(politica)
     last_exc = None
-    for mi, model in enumerate(GEMINI_MODELS):
+    ativos = _MODELOS_ATIVOS or GEMINI_MODELS
+    for mi, model in enumerate(ativos):
         if politica.esgotado:
             # Orçamento acabou: tentar o próximo modelo só adiaria o mesmo
             # desfecho, agora com o screenshot ainda mais velho.
@@ -689,7 +799,11 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # Esgotou as tentativas neste modelo.
         if not _is_overloaded_error(last_exc):
             break  # erro não é de sobrecarga — trocar de modelo não ajuda
-        if mi < len(GEMINI_MODELS) - 1:
+        # O modelo caiu por DISPONIBILIDADE. Isso nao e da chamada, e do
+        # pool: insistir nele no proximo captcha custa o timeout inteiro
+        # outra vez, para chegar na mesma conclusao.
+        _descartar_modelo(model, _diagnostico_erro(last_exc, model))
+        if mi < len(ativos) - 1:
             print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
     # A mensagem desta excecao tambem e log: quem a captura acima imprime.
     raise RuntimeError(

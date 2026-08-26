@@ -107,10 +107,26 @@ except (ValueError, TypeError):
 
 GRID_COLS              = 20
 GRID_ROWS              = 20
-MAX_GEMINI_TRIES       = 5    # tentativas nos loops de alto nível (screenshot/semântica)
+# Tentativas nos loops de alto nivel (screenshot/semantica). Igual ao numero
+# de modelos, e nao por acaso: a chamada usa temperature=0.0, entao a mesma
+# imagem no mesmo modelo devolve SEMPRE a mesma resposta. Com o rodizio,
+# tres tentativas ja ouviram os tres modelos — a quarta e garantida a
+# repetir uma das anteriores. O que ajuda dali em diante e um screenshot
+# NOVO, e disso cuida a rodada seguinte.
+MAX_GEMINI_TRIES       = 3
 GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (troca rápido)
 
 # Teto por TENTATIVA de chamada ao modelo, em milissegundos.
+#
+# 20s, medido em 26/08/2026 contra a API real. Era 30s, e cada falha custava os
+# 30 inteiros — num log de producao isso se repetiu dezenas de vezes numa so
+# execucao. Mas 12s, que foi a primeira tentativa de corte, era CEDO DEMAIS:
+# uma chamada boa levou 19,8s na mesma medicao.
+#
+# O que os numeros mostram e que a latencia varia enormemente no MESMO modelo,
+# minuto a minuto: 1,2s numa chamada e 504 DEADLINE_EXCEEDED aos 29,1s na
+# seguinte. Nao e modelo ruim — e o lado do Google oscilando. Por isso o teto
+# fica logo acima da pior resposta BOA observada, e nao abaixo dela.
 #
 # Sem timeout explícito o SDK usa o default dele, e em produção uma única
 # tentativa chegou a durar ~2 minutos. O custo não é a espera: é que o
@@ -125,9 +141,9 @@ GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (tr
 # 3.6-flash saíram da lista — estouraram o teto em vez de responder.
 # Ajustável por ambiente para diagnóstico, com piso de 1 s.
 try:
-    GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "30000") or "30000"))
+    GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "20000") or "20000"))
 except (ValueError, TypeError):
-    GEMINI_TIMEOUT_MS = 30_000
+    GEMINI_TIMEOUT_MS = 20_000
 
 # Tipos de desafio que `_detect_challenge_type` classifica. Vocabulário FECHADO
 # e público: quem integra precisa decidir POLÍTICA por tipo — o portal Serviços

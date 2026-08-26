@@ -645,78 +645,110 @@ def _diagnostico_erro(e, modelo: str | None = None) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Modelos ativos DESTA execução
+# Banco de reservas: quem falhou descansa, mas volta
 # ──────────────────────────────────────────────────────────────────────────────
 #
 # `GEMINI_MODELS` é a ordem de preferência, medida e fixa. O que muda dentro de
-# uma execução é quais deles estão RESPONDENDO agora — e isso o código antes não
-# guardava em lugar nenhum.
+# uma execução é quem está RESPONDENDO agora.
 #
-# O efeito disso em produção: `_gemini_call` recomeçava do primeiro modelo a
-# CADA chamada. Um modelo com o pool saturado custava o timeout inteiro (30s),
-# caía para o alternativo, resolvia — e no captcha seguinte pagava os mesmos 30s
-# de novo. Numa execução real isso se repetiu em quase toda rodada de captcha,
-# com o mesmo modelo e o mesmo desfecho, sempre "descobrindo" o que já sabia.
+# Duas versões deste código já erraram, em direções opostas:
 #
-# Agora a descoberta é lembrada: um modelo que falha por DISPONIBILIDADE sai da
-# lista quente e não é tentado outra vez nesta execução.
-_MODELOS_ATIVOS: list[str] = list(GEMINI_MODELS)
-_MODELOS_DESCARTADOS: dict[str, str] = {}
+#   1. Sem memória nenhuma: `_gemini_call` recomeçava do primeiro modelo a cada
+#      chamada. Um pool saturado custava o timeout inteiro, caía para o
+#      alternativo, resolvia — e no captcha seguinte pagava tudo de novo,
+#      redescobrindo o que já sabia.
+#
+#   2. Memória definitiva: o modelo que falhasse UMA vez saía para sempre. Num
+#      log de produção isso esvaziou a bancada em dois minutos — um 503 no
+#      flash-lite, um ReadTimeout no flash, e sobrou só o 3.1-flash-lite, que é
+#      justamente o mais lento (cauda de 25s). Sem alternativa, cada chamada
+#      seguinte pagava o timeout cheio. A correção deixou pior do que achou.
+#
+# O erro da segunda foi de LEITURA: 503 e ReadTimeout dizem "ocupado agora", não
+# "morto". Tratar pico como sentença descarta justamente o modelo mais rápido.
+#
+# Daí o banco de reservas: quem falha descansa um tempo que CRESCE a cada falha
+# seguida, e volta. Um acerto zera a conta. Se todos estiverem descansando, joga
+# o que descansou mais — uma tentativa lenta é melhor do que nenhuma.
+# A API RECUSA deadline abaixo de 10s: "Manually set deadline 8s is too
+# short. Minimum allowed deadline is 10s." — um 400 que a sondagem leria
+# como "modelo indisponivel", condenando todos por um erro nosso.
+TIMEOUT_MINIMO_API_MS = 10_000
+
+_DESCANSOS = (60.0, 300.0, 900.0)      # 1min, 5min, 15min
+
+# modelo -> [falhas seguidas, instante em que pode voltar]
+_BANCO: dict[str, list] = {}
+
+
+def _pode_jogar(model: str) -> bool:
+    estado = _BANCO.get(model)
+    return not estado or time.monotonic() >= estado[1]
+
+
+def _voltar_em(model: str) -> float:
+    estado = _BANCO.get(model)
+    return estado[1] if estado else 0.0
 
 
 def modelos_ativos() -> list[str]:
-    """Os modelos que esta execução ainda considera utilizáveis."""
-    return list(_MODELOS_ATIVOS)
+    """Os modelos prontos para jogar AGORA, na ordem de preferência.
 
-
-def _descartar_modelo(model: str, motivo: str) -> None:
-    """Tira `model` do caminho quente pelo resto da execução.
-
-    Nunca esvazia a lista: sem nenhum modelo não haveria o que tentar, e um
-    pool saturado costuma voltar. Se sobrou só ele, ele fica — pagar o timeout
-    é melhor do que não ter caminho nenhum.
+    Vazio nunca: se todos estão descansando, devolve o que volta primeiro. Uma
+    chamada lenta ainda resolve captcha; nenhuma chamada não resolve nada.
     """
-    if model not in _MODELOS_ATIVOS or len(_MODELOS_ATIVOS) <= 1:
-        return
-    _MODELOS_ATIVOS.remove(model)
-    _MODELOS_DESCARTADOS[model] = motivo
-    print(f"    [captcha] '{model}' fora do caminho quente nesta execução "
-          f"({motivo}). Restam: {', '.join(_MODELOS_ATIVOS)}")
+    prontos = [m for m in GEMINI_MODELS if _pode_jogar(m)]
+    if prontos:
+        return prontos
+    return [min(GEMINI_MODELS, key=_voltar_em)]
 
 
-# A API RECUSA deadline abaixo de 10s: "Manually set deadline 8s is too short.
-# Minimum allowed deadline is 10s." — um 400 que a sondagem leria como
-# "modelo indisponivel", condenando todos eles por um erro nosso.
-TIMEOUT_MINIMO_API_MS = 10_000
+def _penalizar(model: str, motivo: str) -> None:
+    """Manda o modelo para o banco por um tempo crescente."""
+    falhas = _BANCO.get(model, [0, 0.0])[0] + 1
+    descanso = _DESCANSOS[min(falhas, len(_DESCANSOS)) - 1]
+    _BANCO[model] = [falhas, time.monotonic() + descanso]
+    restantes = [m for m in GEMINI_MODELS if m != model and _pode_jogar(m)]
+    print(f"    [captcha] '{model}' descansa {descanso / 60:.0f}min "
+          f"({falhas}ª falha seguida: {motivo}). "
+          + (f"Em campo: {', '.join(restantes)}" if restantes
+             else "TODOS descansando — o próximo a voltar joga assim mesmo."))
+
+
+def _premiar(model: str) -> None:
+    """Um acerto zera a ficha: o modelo estava só ocupado, não quebrado."""
+    if model in _BANCO:
+        del _BANCO[model]
 
 
 def preparar_modelos(api_key: str | None = None,
                      timeout_ms: int = 12_000) -> list[str]:
-    """Sonda os modelos UMA vez e fixa os que responderam. Devolve a lista.
+    """Sonda os modelos UMA vez e bane os que nem respondem. Devolve os que ficam.
 
-    Feita para rodar no início da automação, antes do primeiro captcha: uma
-    pergunta trivial ("responda ok"), com teto de tempo curto e sem thinking.
-    O que interessa não é a resposta — é saber QUEM ATENDE, para que o primeiro
-    captcha da execução não seja o cobaia que descobre isso pagando 30s.
+    Feita para rodar no início da automação. O que ela pega bem é o modelo
+    MORTO — um ID aposentado que responde 404 — e esse não vale nem uma
+    tentativa depois.
 
-    Nunca levanta e nunca esvazia a lista: sem chave, sem rede, ou com todos os
-    modelos mudos, a execução segue com a ordem original e a descoberta volta a
-    ser feita durante o uso — que é o comportamento de antes, e funciona.
+    O que ela NÃO prevê é saturação: num log de produção os três passaram na
+    sondagem e dois falharam no primeiro captcha, minutos depois. Por isso a
+    sondagem não reordena nada e não promete nada — quem cuida do pico é o
+    banco de reservas, durante o uso.
+
+    Nunca levanta e nunca esvazia a lista.
     """
-    global _MODELOS_ATIVOS
     api_key = api_key or os.getenv("GEMINI_API_KEY", "")
     if not api_key:
         print("    [captcha] sem GEMINI_API_KEY; sondagem de modelos pulada.")
-        return list(_MODELOS_ATIVOS)
+        return list(GEMINI_MODELS)
 
     try:
         client = _get_client(api_key)
     except Exception as e:
         print(f"    [captcha] sondagem de modelos pulada ({type(e).__name__}).")
-        return list(_MODELOS_ATIVOS)
+        return list(GEMINI_MODELS)
 
     print("    [captcha] sondando os modelos do Gemini...")
-    vivos, mortos = [], []
+    vivos = []
     for model in GEMINI_MODELS:
         inicio = time.monotonic()
         try:
@@ -730,31 +762,31 @@ def preparar_modelos(api_key: str | None = None,
                 ),
             )
         except Exception as e:
-            mortos.append(model)
-            print(f"    [captcha]   {model}: indisponível "
-                  f"({_diagnostico_erro(e, model)})")
+            diag = _diagnostico_erro(e, model)
+            # Só o modelo MORTO fica de fora de saída. Um pico na sondagem não
+            # pode custar o modelo mais rápido pela execução inteira — foi
+            # exatamente esse excesso que esvaziou a bancada antes.
+            if "404" in diag or "not_found" in diag.lower():
+                print(f"    [captcha]   {model}: NÃO EXISTE mais ({diag})")
+                _BANCO[model] = [len(_DESCANSOS), float("inf")]
+                continue
+            print(f"    [captcha]   {model}: instável agora ({diag}) — "
+                  "fica de reserva, sem ser banido")
+            _penalizar(model, "não respondeu à sondagem")
+            vivos.append(model)
             continue
         gasto = time.monotonic() - inicio
+        _premiar(model)
         vivos.append(model)
         print(f"    [captcha]   {model}: ok ({gasto:.1f}s)")
 
-    if not vivos:
-        # Todos mudos agora não quer dizer todos mudos daqui a um minuto — e a
-        # sondagem é curta de propósito. Manter a lista original é o caminho
-        # seguro: o pior caso volta a ser o comportamento antigo.
-        print("    [captcha] nenhum modelo respondeu à sondagem; mantendo a "
-              "ordem original.")
-        return list(_MODELOS_ATIVOS)
-
-    _MODELOS_ATIVOS = vivos
-    for model in mortos:
-        _MODELOS_DESCARTADOS[model] = "não respondeu à sondagem inicial"
-    print(f"    [captcha] modelos desta execução: {', '.join(vivos)}")
-    return list(vivos)
+    print(f"    [captcha] modelos desta execução: {', '.join(vivos) or '(nenhum)'}")
+    return vivos
 
 
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
-                 politica: PoliticaLatencia | None = None) -> dict:
+                 politica: PoliticaLatencia | None = None,
+                 rodizio: int = 0) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
     Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
@@ -764,7 +796,14 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     client = _get_client(api_key)
     politica = _politica(politica)
     last_exc = None
-    ativos = _MODELOS_ATIVOS or GEMINI_MODELS
+    ativos = modelos_ativos()
+    # `rodizio` gira a ordem: e o que faz a RETENTATIVA perguntar a OUTRO
+    # modelo. Com temperature=0.0 a mesma imagem no mesmo modelo devolve a
+    # mesma resposta — repetir "confianca baixa" cinco vezes no mesmo modelo
+    # era garantido nao mudar nada, so gastar chamada.
+    if rodizio and len(ativos) > 1:
+        giro = rodizio % len(ativos)
+        ativos = ativos[giro:] + ativos[:giro]
     for mi, model in enumerate(ativos):
         if politica.esgotado:
             # Orçamento acabou: tentar o próximo modelo só adiaria o mesmo
@@ -780,6 +819,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                     config=_make_config(schema, model,
                                         timeout_ms=politica.timeout_efetivo_ms()),
                 )
+                _premiar(model)
                 if mi > 0:
                     print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
                 return json.loads(resp.text)
@@ -799,10 +839,10 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # Esgotou as tentativas neste modelo.
         if not _is_overloaded_error(last_exc):
             break  # erro não é de sobrecarga — trocar de modelo não ajuda
-        # O modelo caiu por DISPONIBILIDADE. Isso nao e da chamada, e do
-        # pool: insistir nele no proximo captcha custa o timeout inteiro
-        # outra vez, para chegar na mesma conclusao.
-        _descartar_modelo(model, _diagnostico_erro(last_exc, model))
+        # Caiu por DISPONIBILIDADE: e do POOL, nao da chamada. Vai para o
+        # banco por um tempo — insistir nele no proximo captcha custaria o
+        # timeout inteiro de novo, e bani-lo de vez esvazia a bancada.
+        _penalizar(model, _diagnostico_erro(last_exc, model))
         if mi < len(ativos) - 1:
             print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
     # A mensagem desta excecao tambem e log: quem a captura acima imprime.
@@ -1567,7 +1607,8 @@ def _limpar_texto(valor, max_len: int = 200) -> str:
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
-                  politica: PoliticaLatencia | None = None) -> dict:
+                  politica: PoliticaLatencia | None = None,
+                  rodizio: int = 0) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
     png = _shrink_png(png)
     if ref_img:
@@ -1582,7 +1623,8 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
             _gt.Part.from_bytes(data=png, mime_type="image/png"),
             _PROMPT_GRADE,
         ]
-    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade", politica)
+    return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade", politica,
+                        rodizio=rodizio)
 
 
 _PROMPT_GRADE_FUSED = """\
@@ -2427,7 +2469,10 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                 continue
 
             try:
-                result = _gemini_grade(png, ref_img, api_key, politica)
+                # `attempt - 1` gira o modelo: a 2a opiniao vem de OUTRO,
+                # unico jeito de a resposta mudar com temperature=0.0.
+                result = _gemini_grade(png, ref_img, api_key, politica,
+                                       rodizio=attempt - 1)
             except Exception as e:
                 print(f"    [captcha/grade] Gemini erro (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")

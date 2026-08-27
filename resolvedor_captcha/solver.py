@@ -1605,6 +1605,44 @@ def _shrink_png(png: bytes, max_dim: int = 900) -> bytes:
         return png
 
 
+QUALIDADE_JPEG = 85
+
+
+def _para_envio(img: bytes, max_dim: int = 900) -> tuple[bytes, str]:
+    """Bytes prontos para o Gemini + o mime_type correspondente.
+
+    O screenshot nasce PNG, e PNG e o formato errado para o que ele carrega: os
+    tiles do hCaptcha sao FOTOS. Um recorte de 459x689 saia com 291 KB, e cada
+    chamada subia isso antes de o modelo comecar a pensar. Na execucao de
+    27/08/2026 foram 22 `ReadTimeout` de 20s — cerca de sete minutos, um quarto
+    da execucao, esperando requisicoes que nao voltaram.
+
+    Em JPEG a mesma imagem fica na casa das dezenas de KB. A perda e irrelevante
+    para a tarefa (dizer se o tile tem um coelho), e o upload deixa de ser o
+    gargalo.
+
+    O mime_type volta junto porque a resposta e condicional: sem PIL nao ha
+    conversao, e ai o que sobe e o PNG original — declarar "image/jpeg" para
+    bytes de PNG quebraria a chamada.
+    """
+    img = _shrink_png(img, max_dim=max_dim)
+    if not _PIL or not img:
+        return img, "image/png"
+    try:
+        foto = Image.open(io.BytesIO(img)).convert("RGB")
+        buf = io.BytesIO()
+        foto.save(buf, format="JPEG", quality=QUALIDADE_JPEG, optimize=True)
+        return buf.getvalue(), "image/jpeg"
+    except Exception:
+        return img, "image/png"
+
+
+def _parte_imagem(img: bytes, max_dim: int = 900):
+    """A imagem como Part do Gemini, ja no formato e no tamanho de envio."""
+    dados, mime = _para_envio(img, max_dim=max_dim)
+    return _gt.Part.from_bytes(data=dados, mime_type=mime)
+
+
 def _limpar_texto(valor, max_len: int = 200) -> str:
     """Colapsa qualquer sequência de espaços/quebras de linha em um único espaço e
     trunca o resultado.
@@ -1626,17 +1664,15 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
                   politica: PoliticaLatencia | None = None,
                   rodizio: int = 0) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
-    png = _shrink_png(png)
     if ref_img:
-        ref_img = _shrink_png(ref_img, max_dim=512)
         contents = [
-            _gt.Part.from_bytes(data=png,     mime_type="image/png"),
-            _gt.Part.from_bytes(data=ref_img, mime_type="image/png"),
+            _parte_imagem(png),
+            _parte_imagem(ref_img, max_dim=512),
             _PROMPT_GRADE_COM_REF,
         ]
     else:
         contents = [
-            _gt.Part.from_bytes(data=png, mime_type="image/png"),
+            _parte_imagem(png),
             _PROMPT_GRADE,
         ]
     return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade", politica,
@@ -1699,11 +1735,9 @@ Em caso de duvida razoavel: INCLUA o tile.
 def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str,
                         politica: PoliticaLatencia | None = None) -> dict:
     """Grade fused: envia iframe completo (contexto) + tiles recortados com overlay 3x3 → Gemini."""
-    iframe_png = _shrink_png(iframe_png)
-    tiles_png  = _shrink_png(tiles_png)
     contents = [
-        _gt.Part.from_bytes(data=iframe_png, mime_type="image/png"),
-        _gt.Part.from_bytes(data=tiles_png,  mime_type="image/png"),
+        _parte_imagem(iframe_png),
+        _parte_imagem(tiles_png),
         _PROMPT_GRADE_FUSED,
     ]
     return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade_fused", politica)
@@ -1720,7 +1754,7 @@ def _gemini_grid(png: bytes, instrucao: str, api_key: str,
         instruction=instrucao or "Leia a instrucao que aparece na imagem.",
     )
     contents = [
-        _gt.Part.from_bytes(data=png, mime_type="image/png"),
+        _parte_imagem(png),
         prompt,
     ]
     return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid", politica)
@@ -2187,7 +2221,7 @@ def _gemini_cartao_animal(frames: list, api_key: str,
 
     contents: list = [prompt]
     for png in sel:
-        contents.append(_gt.Part.from_bytes(data=png, mime_type="image/png"))
+        contents.append(_parte_imagem(png))
 
     for attempt in range(1, MAX_GEMINI_TRIES + 1):
         try:

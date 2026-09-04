@@ -21,10 +21,11 @@ import json
 import os
 import re
 import time
+from itertools import pairwise
 from typing import NamedTuple, Optional
 
 try:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageChops, ImageDraw, ImageFont
     _PIL = True
 except ImportError:
     _PIL = False
@@ -152,6 +153,13 @@ except (ValueError, TypeError):
 TIPO_NENHUM = "nenhum"
 TIPO_GRADE = "grade"
 TIPO_GRADE_FUSED = "grade_fused"
+# "Clique no animal que a bola nunca toca". Imagem unica e quadrada como o
+# grade_fused, mas a resposta nao esta numa imagem: uma bola se move e pausa
+# sobre cada animal, e a resposta e quem ela nunca toca. Sem o desvio por
+# palavra-chave em `_detect_challenge_type`, isto caia no fallback geometrico
+# de `grade_fused` (imagem quadrada, 0 tiles) e ia parar num resolvedor que
+# nunca poderia acertar: ele olha UM quadro.
+TIPO_BOLA = "bola_em_movimento"
 TIPO_CARTAO_ANIMAL = "cartao_animal"
 TIPO_IMAGEM = "imagem"
 # Só a API pública de INSPEÇÃO devolve este: `_detect_challenge_type` chuta
@@ -159,7 +167,7 @@ TIPO_IMAGEM = "imagem"
 # é perigoso — ver `detectar_tipo_captcha`.
 TIPO_DESCONHECIDO = "desconhecido"
 
-TIPOS_CONHECIDOS = (TIPO_NENHUM, TIPO_GRADE, TIPO_GRADE_FUSED,
+TIPOS_CONHECIDOS = (TIPO_NENHUM, TIPO_GRADE, TIPO_GRADE_FUSED, TIPO_BOLA,
                     TIPO_CARTAO_ANIMAL, TIPO_IMAGEM, TIPO_DESCONHECIDO)
 
 CHECKBOX_SEL   = "iframe[src*='hcaptcha.com'][src*='frame=checkbox']"
@@ -1274,6 +1282,26 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
                     f"(instrucao: '{instrucao_lower[:60]}')."
                 )
                 return "cartao_animal"
+
+            # "nunca toca"/"nunca alcanca" e especifico o bastante para nao
+            # colidir com outros enunciados; "bola" sozinho NAO serve de ancora
+            # — ja apareceu em variantes com bola de volei e de futebol que sao
+            # outro desafio. E a mecanica ("nunca toca") que identifica este.
+            #
+            # Precisa vir antes do fallback geometrico logo abaixo: a area e uma
+            # imagem unica e quadrada, entao ela seria classificada `grade_fused`
+            # e mandada a um resolvedor que olha UM quadro — incapaz de acertar,
+            # por construcao, um desafio cuja resposta so existe na sequencia.
+            _kw_bola = ("bola" in instrucao_lower
+                        and ("nunca toca" in instrucao_lower
+                             or "nunca alcança" in instrucao_lower
+                             or "não toca" in instrucao_lower))
+            if _kw_bola:
+                print(
+                    f"    [captcha] Tipo: {TIPO_BOLA} "
+                    f"(instrucao: '{instrucao_lower[:60]}')."
+                )
+                return TIPO_BOLA
         except Exception:
             pass
 
@@ -2883,6 +2911,340 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# "Clique no animal que a bola nunca toca"
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# A resposta nao esta numa imagem: a bola se move e PAUSA sobre cada animal, e a
+# resposta e quem ela nunca toca. Um screenshot unico nao contem a informacao —
+# e precisa a SEQUENCIA. Por isso este resolvedor captura, e nao fotografa.
+#
+# Ciclo da animacao medido em ~9,9s. A captura sozinha
+# (BOLA_FRAMES * BOLA_INTERVALO_S = 7s) ja consome a maior parte de um orcamento
+# apertado — e o motivo de `_solve_bola` exigir deadline e recusar rodar sem um.
+BOLA_FRAMES = 14
+BOLA_INTERVALO_S = 0.5
+BOLA_N_ALTA = 2
+BOLA_N_BAIXA = 6
+BOLA_ESC_ALTA = 0.85
+BOLA_ESC_BAIXA = 0.30
+# Transicao de rodada real mede dezenas de milhares de px (medido: 42.924).
+# Limiar SO relativo erra quando a media ja e ruido (desafio parado): um "7x a
+# media" de 51 px vale 356 — por isso o piso absoluto.
+BOLA_TRANSICAO_MIN_PX = 20_000
+
+_SCHEMA_BOLA = {
+    "type": "object",
+    "properties": {
+        "animais": {"type": "array", "items": {"type": "string"}},
+        "tocados": {"type": "array", "items": {"type": "string"}},
+        "resposta": {"type": "string"},
+        "col": {
+            "type": "integer",
+            "description": f"Coluna do grid, 0-based (0=esquerda, {GRID_COLS - 1}=direita).",
+        },
+        "row": {
+            "type": "integer",
+            "description": f"Linha do grid, 0-based (0=topo, {GRID_ROWS - 1}=baixo).",
+        },
+        "justificativa": {"type": "string"},
+        "confidence": {"type": "string"},
+    },
+    "required": ["animais", "tocados", "resposta", "col", "row", "confidence"],
+}
+
+_PROMPT_BOLA = """\
+Você está resolvendo um captcha hCaptcha do tipo "Clique no animal que a bola nunca toca".
+
+=== O QUE VOCÊ RECEBEU ===
+{cabecalho}
+
+O PRIMEIRO quadro tem uma GRADE vermelha sobreposta, com rótulos "coluna,linha":
+{cols} colunas (0 a {max_col}) e {rows} linhas (0 a {max_row}). Os demais quadros
+NÃO têm grade — são a mesma cena, nos instantes seguintes.
+
+=== COMO ESTE DESAFIO FUNCIONA ===
+Há vários animais fixos, espalhados pela área. Há UMA bola que se MOVE, quadro
+a quadro, passando por cima de alguns animais. A bola pode ser de futebol
+(preta e branca), de vôlei (azul e amarela) ou outra — não assuma a cor.
+
+A resposta é o único animal que a bola NUNCA sobrepõe em NENHUM quadro.
+
+=== MÉTODO OBRIGATÓRIO ===
+1. Liste os animais presentes (são os MESMOS em todos os quadros).
+2. Para CADA quadro, diga sobre qual animal a bola está (ou "nenhum").
+3. Elimine todo animal que apareceu tocado em pelo menos um quadro.
+4. Sobra um: é a resposta.
+
+=== REGRAS CRÍTICAS ===
+  !! NÃO adivinhe pelo primeiro quadro. A informação só existe na SEQUÊNCIA.
+  !! Um animal parcialmente coberto pela bola CONTA como tocado.
+  !! Se sobrar mais de um candidato, diga a confiança como "low" — não force
+     uma escolha.
+  !! O fundo tem textura animada. Ignore o fundo — só importam animais e bola.
+  !! IGNORE a barra de botões no rodapé: ali não há animal nenhum.
+
+=== ONDE ELE ESTÁ ===
+`col` e `row` são a CÉLULA DA GRADE em que fica o CENTRO do animal-resposta,
+lida no primeiro quadro. Responda a célula, não pixels.
+
+=== RETORNE ===
+  animais: lista dos animais identificados, em português, minúsculas
+  tocados: lista dos que a bola sobrepôs em algum quadro
+  resposta: o animal que a bola nunca toca (um só, em português, minúsculas)
+  col, row: célula do centro desse animal, na grade do primeiro quadro
+  justificativa: uma frase curta
+  confidence: "high" | "medium" | "low"
+"""
+
+
+def _capturar_frames_bola(page, n: int = BOLA_FRAMES,
+                          intervalo_s: float = BOLA_INTERVALO_S
+                          ) -> tuple[list[bytes], dict | None]:
+    """Captura N screenshots da area do desafio, por CLIP — nao por elemento.
+
+    `locator.screenshot()` espera o elemento ficar ESTAVEL antes de capturar, e
+    numa area animada isso devolve quase sempre o mesmo quadro: medido, 51 px de
+    diferenca media entre "quadros" com a bola visivelmente se movendo na tela.
+    `page.screenshot(clip=..., animations="allow")` captura pela geometria, sem
+    estabilizar nada — a diferenca media sobe para a ordem de milhares.
+    """
+    loc = _get_challenge_element_locator(page)
+    try:
+        caixa = loc.bounding_box()
+    except Exception:  # noqa: BLE001
+        return [], None
+    if not caixa:
+        return [], None
+    clip = {"x": caixa["x"], "y": caixa["y"],
+            "width": caixa["width"], "height": caixa["height"]}
+    frames: list[bytes] = []
+    for _ in range(n):
+        try:
+            frames.append(page.screenshot(clip=clip, animations="allow", timeout=4_000))
+        except Exception:  # noqa: BLE001
+            break
+        time.sleep(intervalo_s)
+    return frames, caixa
+
+
+def _maior_trecho_sem_transicao(frames: list[bytes]) -> list[bytes]:
+    """Isola uma unica rodada dentro dos frames capturados.
+
+    O hCaptcha faz DUAS rodadas por desafio, e a janela de captura pode
+    atravessar a virada — ela troca a cena inteira, o que aparece como um pico
+    de dezenas de milhares de pixels mudados entre dois frames consecutivos
+    (medido: 42.924 px, contra ~5.000 de media numa rodada em movimento). Sem
+    isolar, o modelo recebe frames de dois desafios diferentes misturados e a
+    eliminacao nao pode fechar.
+    """
+    if not _PIL or len(frames) < 3:
+        return frames
+    imgs = [Image.open(io.BytesIO(f)).convert("RGB") for f in frames]
+    difs = []
+    for a, b in pairwise(imgs):
+        d = ImageChops.difference(a, b).convert("L").point(lambda p: 255 if p > 40 else 0)
+        difs.append(sum(d.point(bool).getdata()))
+    if not difs:
+        return frames
+    media = sum(difs) / len(difs)
+    cortes = [i + 1 for i, d in enumerate(difs)
+              if d > BOLA_TRANSICAO_MIN_PX and d > 7 * media]
+    if not cortes:
+        return frames
+    limites = [0, *cortes, len(frames)]
+    trechos = [frames[a:b] for a, b in pairwise(limites)]
+    return max(trechos, key=len)
+
+
+def _amostrar_frames_distintos(frames: list[bytes], n: int) -> list[bytes]:
+    """Escolhe `n` frames priorizando os que MUDAM entre si.
+
+    A bola PAUSA sobre cada animal, entao amostragem uniforme reamostra o mesmo
+    instante: na primeira coleta, 5 frames a 0,7s devolveram a bola em apenas 3
+    posicoes distintas. Mandar quadros repetidos ao modelo gasta payload sem
+    acrescentar informacao — e a informacao aqui e justamente o movimento.
+    """
+    if not _PIL or len(frames) <= n:
+        return frames
+    imgs = [Image.open(io.BytesIO(f)).convert("RGB").resize((80, 80)) for f in frames]
+    escolhidos = [0]
+    while len(escolhidos) < n:
+        melhor, melhor_d = None, -1
+        for i in range(len(frames)):
+            if i in escolhidos:
+                continue
+            d = min(sum(ImageChops.difference(imgs[i], imgs[j])
+                        .convert("L").point(bool).getdata())
+                    for j in escolhidos)
+            if d > melhor_d:
+                melhor, melhor_d = i, d
+        if melhor is None:
+            break
+        escolhidos.append(melhor)
+    return [frames[i] for i in sorted(escolhidos)]
+
+
+def _preparar_partes_bola(frames: list[bytes], n_alta: int, esc_alta: float,
+                          esc_baixa: float) -> list[bytes]:
+    """Recorte hibrido: os primeiros `n_alta` em resolucao maior — para
+    IDENTIFICAR especies —, o resto pequenos — so para RASTREAR a bola.
+
+    Identificar especie precisa de resolucao; rastrear posicao nao. Essa
+    separacao derrubou o payload de ~1,1 MB (5 quadros grandes, que sempre
+    estourava ReadTimeout) para ~130 KB com o dobro de quadros.
+
+    A GRADE vai so no primeiro, que e o quadro a que o prompt se refere para
+    pedir a celula. Nos demais ela seria ruido visual sobre a bola.
+    """
+    saida = []
+    for idx, png in enumerate(frames):
+        esc = esc_alta if idx < n_alta else esc_baixa
+        im = Image.open(io.BytesIO(png)).convert("RGB")
+        w, h = im.size
+        im = im.resize((max(1, int(w * esc)), max(1, int(h * esc))), Image.LANCZOS)
+        buf = io.BytesIO()
+        im.save(buf, "PNG")
+        bruto = buf.getvalue()
+        if idx == 0:
+            bruto = _overlay_grid(bruto, GRID_COLS, GRID_ROWS)
+        im = Image.open(io.BytesIO(bruto)).convert("RGB")
+        buf = io.BytesIO()
+        im.save(buf, "JPEG", quality=80)
+        saida.append(buf.getvalue())
+    return saida
+
+
+def _gemini_bola(partes_bin: list[bytes], n_alta: int, api_key: str,
+                 politica: PoliticaLatencia | None = None,
+                 rodizio: int = 0) -> dict:
+    cabecalho = (
+        f"{min(n_alta, len(partes_bin))} quadros em ALTA resolução (os primeiros) e "
+        f"{max(0, len(partes_bin) - n_alta)} em BAIXA resolução (os seguintes), "
+        "todos da MESMA animação, em ordem cronológica."
+    )
+    contents: list = [_PROMPT_BOLA.format(
+        cabecalho=cabecalho, cols=GRID_COLS, rows=GRID_ROWS,
+        max_col=GRID_COLS - 1, max_row=GRID_ROWS - 1)]
+    for png in partes_bin:
+        contents.append(_gt.Part.from_bytes(data=png, mime_type="image/jpeg"))
+    return _gemini_call(contents, _SCHEMA_BOLA, api_key, "bola", politica,
+                        rodizio=rodizio)
+
+
+def _solve_bola(page, api_key: str, max_rounds: int = 2,
+                politica: PoliticaLatencia | None = None) -> bool:
+    """Resolve "Clique no animal que a bola nunca toca".
+
+    Criterio de seguranca: so clica com a eliminacao FECHADA (exatamente um
+    candidato restante). `confidence: "high"` NAO serve de criterio — o modelo
+    relatou "high" nos casos em que sobraram dois candidatos e chutou errado.
+    Errar aqui tem custo real: alimenta a escalada de dificuldade do hCaptcha
+    para a sessao inteira.
+
+    A posicao sai como CELULA DA GRADE, nao como pixel, e a razao e medida.
+    Pedindo pixel, das 13 coordenadas devolvidas em 3 amostras, 6 cairam em
+    lugar impossivel — dentro da faixa de botoes do rodape, ou a 4-6 px da borda
+    de uma imagem de 651x714. O modelo NOMEIA os animais certo e nao sabe
+    aponta-los. Com grade, sobre as mesmas 3 amostras, 3/3 com a resposta
+    utilizavel e correta. E a mesma tecnica que `_solve_imagem` ja usa aqui, e
+    pelo mesmo motivo.
+
+    EXIGE orcamento de tempo LIMITADO (`politica.fim` definido) e desiste sem
+    ele. A captura sozinha leva ~7s ANTES da primeira chamada; sem teto, duas
+    rodadas completas com a cadeia de modelos inteira ficam livres para levar o
+    tempo que os timeouts por chamada permitirem, e o desafio expira na tela
+    antes disso — ja observado, com o portal fechando o captcha no meio.
+    """
+    if not _PIL:
+        print("    [captcha/bola] Pillow indisponível — não é possível resolver.")
+        return False
+    if politica is None or politica.fim is None:
+        print("    [captcha/bola] Sem orçamento de tempo definido — "
+              "recusando (este resolvedor só roda com deadline).")
+        return False
+
+    for rnd in range(1, max_rounds + 1):
+        if _politica(politica).esgotado:
+            print(f"    [captcha/bola] Orçamento total esgotado na rodada {rnd} — parando.")
+            return False
+        if not _challenge_visible(page):
+            print("    [captcha/bola] Desafio sumiu — resolvido!")
+            return True
+
+        print(f"    [captcha/bola] Rodada {rnd}/{max_rounds} — capturando animação...")
+        enunciado_origem = _prompt_do_desafio(page)
+        frames, caixa = _capturar_frames_bola(page)
+        if len(frames) < 5 or not caixa:
+            print("    [captcha/bola] Poucos quadros capturados — retentando.")
+            continue
+        if not _challenge_visible(page):
+            print("    [captcha/bola] Desafio sumiu durante a captura — resolvido!")
+            return True
+
+        rodada = _maior_trecho_sem_transicao(frames)
+        selecionados = _amostrar_frames_distintos(rodada, BOLA_N_ALTA + BOLA_N_BAIXA)
+        partes_bin = _preparar_partes_bola(
+            selecionados, BOLA_N_ALTA, BOLA_ESC_ALTA, BOLA_ESC_BAIXA)
+
+        try:
+            result = _gemini_bola(partes_bin, BOLA_N_ALTA, api_key, politica,
+                                  rodizio=rnd - 1)
+        except Exception as e:  # noqa: BLE001
+            print(f"    [captcha/bola] Gemini falhou | {_diagnostico_erro(e)}")
+            continue
+
+        animais = [str(a).strip().lower() for a in (result.get("animais") or [])]
+        tocados = {str(a).strip().lower() for a in (result.get("tocados") or [])}
+        restantes = [a for a in animais if a not in tocados]
+        print(f"    [captcha/bola] animais={animais} tocados={sorted(tocados)} "
+              f"restantes={restantes} confidence={result.get('confidence')}")
+
+        if len(restantes) != 1:
+            print(f"    [captcha/bola] eliminação não fechou ({len(restantes)} "
+                  "candidatos) — retentando em vez de chutar.")
+            continue
+
+        # Freshness leve: fingerprint de pixel exato NAO SERVE aqui — a area e
+        # animada, dois frames do MESMO desafio nunca batem byte a byte. O
+        # enunciado ainda igual + geometria estavel e o que da para checar.
+        if not _challenge_visible(page) or _prompt_do_desafio(page) != enunciado_origem:
+            print(f"    [captcha/bola] {MSG_DESCARTE}")
+            continue
+        if not _geometria_estavel(page, caixa):
+            print(f"    [captcha/bola] {MSG_DESCARTE}")
+            continue
+
+        col, row = result.get("col"), result.get("row")
+        if col is None or row is None:
+            print("    [captcha/bola] Sem célula — retentando.")
+            continue
+        # Mesma conta de `_click_grid_positions`: a celula e uma FRACAO da
+        # caixa, entao a escala com que a imagem foi enviada nao entra aqui.
+        col = max(0, min(GRID_COLS - 1, int(col)))
+        row = max(0, min(GRID_ROWS - 1, int(row)))
+        x_real = caixa["x"] + (col + 0.5) * (caixa["width"] / GRID_COLS)
+        y_real = caixa["y"] + (row + 0.5) * (caixa["height"] / GRID_ROWS)
+
+        _mover_cursor_suave(1)
+        try:
+            page.mouse.click(x_real, y_real)
+            print(f"    [captcha/bola] Clicado em '{result.get('resposta')}' "
+                  f"célula=({col},{row}) -> ({x_real:.0f},{y_real:.0f})")
+        except Exception:  # noqa: BLE001
+            print("    [captcha/bola] Erro ao clicar.")
+            continue
+
+        time.sleep(0.2)
+        _submit_captcha(page)
+
+        if _wait_for_resolve(page, timeout_ms=3_000):
+            print("    [captcha/bola] Captcha resolvido!")
+            return True
+
+    return False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Ponto de entrada público
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -2943,6 +3305,8 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             ok = _solve_grade_fused(page, api_key, politica=politica)
         elif tipo == "cartao_animal":
             ok = _solve_cartao_animal(page, api_key, politica=politica)
+        elif tipo == TIPO_BOLA:
+            ok = _solve_bola(page, api_key, politica=politica)
         else:
             ok = _solve_imagem(page, api_key, politica=politica)
 

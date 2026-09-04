@@ -250,8 +250,8 @@ def test_detector_esta_na_api_publica():
 def test_tipos_conhecidos_sao_os_valores_reais_do_detector():
     """Vocabulario fechado, batendo com o que `_detect_challenge_type` devolve."""
     assert solver.TIPOS_CONHECIDOS == (
-        "nenhum", "grade", "grade_fused", "cartao_animal", "imagem",
-        "desconhecido")
+        "nenhum", "grade", "grade_fused", "bola_em_movimento",
+        "cartao_animal", "imagem", "desconhecido")
 
 
 def test_sem_desafio_devolve_nenhum(page, captcha):

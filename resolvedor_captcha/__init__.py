@@ -8,6 +8,7 @@ decidir POLITICA POR TIPO — nem todo fluxo autoriza resolucao automatica de
 todos os formatos.
 """
 from .solver import (
+    TIPO_BOLA,
     TIPO_CARTAO_ANIMAL,
     TIPO_DESCONHECIDO,
     TIPO_GRADE,
@@ -27,6 +28,7 @@ from .solver import (
 
 __all__ = [
     "TIPOS_CONHECIDOS",
+    "TIPO_BOLA",
     "preparar_modelos",
     "modelos_ativos",
     "TIPO_CARTAO_ANIMAL",

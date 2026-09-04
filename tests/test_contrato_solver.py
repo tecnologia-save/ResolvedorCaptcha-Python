@@ -328,3 +328,49 @@ def test_classificador_esta_na_api_publica():
     for nome in ("TIPO_GRADE", "TIPO_GRADE_FUSED", "TIPO_CARTAO_ANIMAL",
                  "TIPO_IMAGEM", "TIPO_NENHUM", "TIPO_DESCONHECIDO"):
         assert nome in resolvedor_captcha.__all__
+
+
+# ── Sonda de movimento: o sinal FISICO que identifica a bola ────────────────
+#
+# A bola e uma imagem unica e quadrada, entao o fallback geometrico a
+# classificava `grade_fused` e a mandava para um resolvedor que olha UM quadro.
+# O desvio por palavra-chave so a pega quando o texto e legivel no DOM. A sonda
+# nao depende de ler nada: movimento e a propriedade que DEFINE este desafio.
+
+def test_limiar_de_movimento_separa_ruido_de_bola():
+    """Medido: ruido de compressao 0,011%; bola em movimento 0,90%-2,12%.
+
+    O limiar tem de ficar entre os dois, e com folga dos dois lados — 27x acima
+    do ruido e 3x abaixo do sinal mais fraco ja observado.
+    """
+    RUIDO_MEDIDO = 0.00011
+    BOLA_MAIS_FRACA_MEDIDA = 0.0090
+    assert RUIDO_MEDIDO < solver.BOLA_MOVIMENTO_MIN_FRACAO < BOLA_MAIS_FRACA_MEDIDA
+    assert solver.BOLA_MOVIMENTO_MIN_FRACAO >= RUIDO_MEDIDO * 10
+    assert solver.BOLA_MOVIMENTO_MIN_FRACAO <= BOLA_MAIS_FRACA_MEDIDA / 2
+
+
+def test_limiar_e_FRACAO_e_nao_contagem_de_pixels():
+    """Areas de 651x714 e 520x402 ja foram vistas; pixel absoluto viraria
+    sensibilidade diferente para cada tamanho."""
+    assert 0.0 < solver.BOLA_MOVIMENTO_MIN_FRACAO < 1.0
+
+
+def test_sonda_nunca_derruba_a_classificacao():
+    """Qualquer falha devolve False: na duvida, mantem o que ja existia."""
+    class PaginaQuebrada:
+        def locator(self, *_a, **_k):
+            raise RuntimeError("sem página")
+    assert solver._area_do_desafio_se_move(PaginaQuebrada()) is False
+
+
+def test_sonda_sem_bounding_box_nao_afirma_movimento():
+    class SemCaixa:
+        def locator(self, *_a, **_k):
+            return self
+        @property
+        def first(self):
+            return self
+        def bounding_box(self):
+            return None
+    assert solver._area_do_desafio_se_move(SemCaixa()) is False

@@ -1216,6 +1216,67 @@ def _geometria_estavel(page, caixa_origem: dict | None) -> bool:
     return _mesma_caixa(atual, caixa_origem)
 
 
+# Fração de pixels que precisa mudar entre dois quadros para a área contar como
+# ANIMADA. Medido: área parada dá ~51 px de diferença numa região de 651x714
+# (0,011% — ruído de compressão JPEG do próprio screenshot), e a bola em
+# movimento dá ~5.000 px na mesma região (1,1%). Três ordens de grandeza entre
+# os dois casos, então 0,3% fica longe de ambos e não é número escolhido a dedo.
+#
+# FRAÇÃO, e não contagem absoluta: a área do desafio varia de tamanho (651x714 e
+# 520x402 já foram vistos), e um limiar em pixels viraria sensibilidade
+# diferente para cada tamanho.
+BOLA_MOVIMENTO_MIN_FRACAO = 0.003
+BOLA_SONDA_INTERVALO_S = 0.45   # a bola PAUSA sobre cada animal; intervalo curto
+BOLA_SONDA_DIF_MIN = 40         # por canal, para ignorar recompressão
+
+
+def _area_do_desafio_se_move(page) -> bool:
+    """Dois screenshots com intervalo curto: a área do desafio muda sozinha?
+
+    É o sinal FÍSICO que separa a bola de qualquer outro desafio de imagem
+    única. Não depende de ler o enunciado, de acertar palavra-chave nem de
+    idioma — a bola é o único formato em que a cena se mexe sozinha.
+
+    Captura por CLIP, nunca por elemento: `locator.screenshot()` espera o
+    elemento ficar ESTÁVEL antes de capturar, e numa área animada isso devolve
+    quase sempre o mesmo quadro — foi medido, 51 px de diferença média com a
+    bola visivelmente andando na tela. `page.screenshot(clip=...,
+    animations="allow")` captura pela geometria e não congela nada.
+
+    Custa ~0,5 s e dois screenshots, e só roda no caminho ambíguo (0 tiles com
+    proporção de grade). Falha de qualquer natureza devolve False: na dúvida,
+    mantém a classificação que já existia.
+    """
+    if not _PIL:
+        return False
+    try:
+        loc = _get_challenge_element_locator(page)
+        caixa = loc.bounding_box()
+        if not caixa:
+            return False
+        clip = {"x": caixa["x"], "y": caixa["y"],
+                "width": caixa["width"], "height": caixa["height"]}
+        a = page.screenshot(clip=clip, animations="allow", timeout=4_000)
+        time.sleep(BOLA_SONDA_INTERVALO_S)
+        b = page.screenshot(clip=clip, animations="allow", timeout=4_000)
+
+        ia = Image.open(io.BytesIO(a)).convert("RGB")
+        ib = Image.open(io.BytesIO(b)).convert("RGB")
+        if ia.size != ib.size:
+            return False
+        dif = ImageChops.difference(ia, ib).convert("L")
+        mudou = sum(dif.point(lambda p: 255 if p > BOLA_SONDA_DIF_MIN else 0)
+                    .point(bool).getdata())
+        total = ia.size[0] * ia.size[1]
+        fracao = mudou / total if total else 0.0
+        print(f"    [captcha] Sonda de movimento: {fracao * 100:.2f}% dos pixels "
+              f"mudaram em {BOLA_SONDA_INTERVALO_S:.2f}s "
+              f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%).")
+        return fracao >= BOLA_MOVIMENTO_MIN_FRACAO
+    except Exception:  # noqa: BLE001 — sonda nunca derruba a classificação
+        return False
+
+
 def _detect_challenge_type(page, timeout_ms: int = 12_000,
                            ao_falhar: str = TIPO_GRADE) -> str:
     """Detecta tipo do desafio: 'grade', 'grade_fused', 'imagem', ou 'nenhum'.
@@ -1265,6 +1326,12 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
 
         # Verifica instrução ANTES de checar tiles — cartao_animal tem 0 tiles no início
         # (cartas face-down) mas a instrução já está visível no DOM
+        #
+        # Inicializada FORA do try: o caminho geométrico mais abaixo também a
+        # imprime, e sem isto um `evaluate` que falhe deixaria a variável sem
+        # ligação — NameError numa linha de log, derrubando a classificação
+        # inteira por causa de um print.
+        instrucao_lower = ""
         try:
             instrucao_lower = frame.evaluate("""() => {
                 for (const s of ['.prompt-text', 'h2', '.header-text', '[class*="prompt"]']) {
@@ -1293,9 +1360,11 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
             # e mandada a um resolvedor que olha UM quadro — incapaz de acertar,
             # por construcao, um desafio cuja resposta so existe na sequencia.
             _kw_bola = ("bola" in instrucao_lower
-                        and ("nunca toca" in instrucao_lower
-                             or "nunca alcança" in instrucao_lower
-                             or "não toca" in instrucao_lower))
+                        and any(m in instrucao_lower for m in (
+                            "nunca toca", "nunca alcança", "nunca alcanca",
+                            "não toca", "nao toca", "nunca encosta",
+                            "não encosta", "nao encosta", "jamais toca",
+                            "nunca passa")))
             if _kw_bola:
                 print(
                     f"    [captcha] Tipo: {TIPO_BOLA} "
@@ -1336,9 +1405,38 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
                 ratio = bounds["width"] / bounds["height"]
                 # Grade 3x3 é aproximadamente quadrada (0.75–1.4); imagem livre é mais retangular
                 if 0.75 <= ratio <= 1.4:
+                    # ANTES de chamar de grade_fused: a área se MEXE?
+                    #
+                    # Este é o ponto em que a bola era engolida. Ela é uma imagem
+                    # única e quadrada, então cai exatamente aqui, e seguia para
+                    # um resolvedor que olha UM quadro. O desvio por palavra-chave
+                    # acima só a pega quando o texto da instrução é legível no
+                    # DOM; quando não é, a geometria decide sozinha e decide
+                    # errado.
+                    #
+                    # Movimento é a propriedade que DEFINE este desafio, e não
+                    # depende de ler nem de traduzir nada.
+                    if _area_do_desafio_se_move(page):
+                        print(f"    [captcha] Tipo: {TIPO_BOLA} "
+                              f"(área animada, {bounds['width']:.0f}x"
+                              f"{bounds['height']:.0f}px ratio={ratio:.2f}).")
+                        return TIPO_BOLA
+                    # O ENUNCIADO entra no log AQUI, e não só nos tipos
+                    # reconhecidos por palavra-chave.
+                    #
+                    # Levantamento do histórico de dev: todo tipo classificado
+                    # por texto registra a instrução; os dois classificados por
+                    # GEOMETRIA (grade e grade_fused) não registram nada. Ou
+                    # seja, justamente quando a classificação é incerta, o dado
+                    # que resolveria a dúvida é o único que falta — e
+                    # `grade_fused` tem 116 ocorrências. Sem isto, "era bola
+                    # classificada errado ou outro formato?" é indecidível
+                    # depois do fato, para sempre.
                     print(
                         f"    [captcha] Tipo: grade fused (0 tiles, "
-                        f"{bounds['width']:.0f}x{bounds['height']:.0f}px ratio={ratio:.2f})."
+                        f"{bounds['width']:.0f}x{bounds['height']:.0f}px "
+                        f"ratio={ratio:.2f}, instrucao: "
+                        f"'{(instrucao_lower or '')[:60]}')."
                     )
                     return "grade_fused"
         except Exception:

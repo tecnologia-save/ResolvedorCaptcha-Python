@@ -1943,7 +1943,8 @@ def _gemini_grade_fused(iframe_png: bytes, tiles_png: bytes, api_key: str,
 
 
 def _gemini_grid(png: bytes, instrucao: str, api_key: str,
-                 politica: PoliticaLatencia | None = None) -> dict:
+                 politica: PoliticaLatencia | None = None,
+                 rodizio: int = 0) -> dict:
     """Imagem+grid → Gemini → {instruction, action, click_positions, confidence}."""
     prompt = _PROMPT_GRID_TMPL.format(
         cols=GRID_COLS,
@@ -1956,7 +1957,8 @@ def _gemini_grid(png: bytes, instrucao: str, api_key: str,
         _parte_imagem(png),
         prompt,
     ]
-    return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid", politica)
+    return _gemini_call(contents, _SCHEMA_GRID, api_key, "grid", politica,
+                        rodizio=rodizio)
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -2960,7 +2962,16 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         print(f"    [captcha/imagem] Screenshot com grid: {len(png_grid) // 1024} KB")
 
         try:
-            result = _gemini_grid(png_grid, instrucao, api_key, politica)
+            # `rodizio` faz cada RODADA começar num modelo diferente. Sem ele,
+            # rodada 2 mandava a mesma imagem para o mesmo modelo com
+            # temperature=0.0 — resposta byte a byte idêntica, garantida. Eram 4
+            # rodadas de repetição pura, cada uma com screenshots e uma chamada
+            # ao modelo, e nenhuma chance de mudar de resultado.
+            #
+            # O mecanismo já existia e estava ligado nos outros resolvedores;
+            # este ficou de fora.
+            result = _gemini_grid(png_grid, instrucao, api_key, politica,
+                                  rodizio=rnd - 1)
         except Exception as e:
             print(f"    [captcha/imagem] Gemini falhou | {_diagnostico_erro(e)}")
             continue

@@ -316,3 +316,50 @@ def test_timeout_sem_texto_ainda_e_tempo_esgotado():
         pass
     assert solver._categoria_do_erro(ReadTimeout()) == "tempo_esgotado"
     assert solver._is_overloaded_error(ReadTimeout()) is True
+
+
+# ── Rodizio: cada rodada ouve um modelo diferente ───────────────────────────
+#
+# `temperature=0.0` torna a chamada deterministica: mesma imagem, mesmo modelo,
+# resposta identica byte a byte. Repetir sem trocar de modelo e' gasto puro.
+# O mecanismo existia e estava ligado em grade, grade_fused, cartao_animal e
+# bola; `_solve_imagem` ficou de fora — 4 rodadas de repeticao garantida, cada
+# uma com screenshots e uma chamada.
+
+def test_gemini_grid_aceita_rodizio():
+    """Sem isto, `_solve_imagem` nao tem como pedir outro modelo."""
+    import inspect
+    assert "rodizio" in inspect.signature(solver._gemini_grid).parameters
+
+
+def test_gemini_grid_repassa_o_rodizio(monkeypatch):
+    visto = {}
+    monkeypatch.setattr(solver, "_gemini_call",
+                        lambda *a, **kw: visto.update(kw) or {"ok": 1})
+    solver._gemini_grid(b"", "instrucao", "k", None, rodizio=2)
+    assert visto.get("rodizio") == 2
+
+
+def test_rodizio_gira_a_ordem_dos_modelos(monkeypatch):
+    """Rodada N comeca no modelo N — e o que faz a repeticao valer alguma coisa."""
+    primeiros = []
+
+    def cliente_que_falha(_k):
+        class C:
+            class models:
+                @staticmethod
+                def generate_content(model, **_kw):
+                    primeiros.append(model)
+                    raise RuntimeError("503 unavailable")
+        return C()
+
+    monkeypatch.setattr(solver, "_get_client", cliente_que_falha)
+    for rodada in range(3):
+        # O banco de reservas precisa ser zerado A CADA iteracao: as falhas
+        # simuladas suspendem modelos, e a rodada seguinte comecaria de uma
+        # lista de ativos ja diferente — mediria o banco, nao o rodizio.
+        solver._BANCO.clear()
+        primeiros.clear()
+        with pytest.raises(RuntimeError):
+            solver._gemini_call([], {}, "k", "grid", rodizio=rodada)
+        assert primeiros[0] == solver.GEMINI_MODELS[rodada % len(solver.GEMINI_MODELS)]

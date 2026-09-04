@@ -29,6 +29,24 @@ def relogio_virtual(monkeypatch):
     monkeypatch.setattr(solver.time, "time", ler)
 
 
+@pytest.fixture(autouse=True)
+def bancada_limpa():
+    """Zera o banco de reservas entre testes.
+
+    `_BANCO` e global de modulo e sobrevive ao teste que o encheu. Um caso que
+    exercita indisponibilidade suspende `gemini-3.5-flash-lite` por 15 min, e
+    todos os testes seguintes passam a receber `modelos_ativos()` comecando pelo
+    SEGUNDO modelo — 15 testes falhando por contagem e ordem de chamada, sem
+    nenhum defeito no codigo que eles cobrem. Falha de isolamento, nao de
+    comportamento: a suspensao e por tempo de PAREDE (`time.monotonic`, que o
+    relogio virtual acima nao intercepta), entao nem rodar a suite de novo
+    limpava.
+    """
+    solver._BANCO.clear()
+    yield
+    solver._BANCO.clear()
+
+
 @pytest.fixture
 def captcha():
     return Captcha()

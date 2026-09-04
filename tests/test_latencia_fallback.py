@@ -40,8 +40,12 @@ def _cliente(comportamento):
 
 # ── Timeout explicito ────────────────────────────────────────────────────────
 
-def test_timeout_padrao_e_de_30_segundos():
-    assert solver.GEMINI_TIMEOUT_MS == 30_000
+def test_timeout_padrao_e_de_20_segundos():
+    # Era 30s ate 67ac1f8 ("teto de 20s por chamada"), que mexeu no solver e
+    # deixou este teste para tras. O numero segue fixado a mao de proposito: e
+    # ele que multiplica pelo numero de modelos no pior caso, entao mudar o teto
+    # tem de doer aqui.
+    assert solver.GEMINI_TIMEOUT_MS == 20_000
 
 
 def test_config_carrega_o_timeout_em_milissegundos():
@@ -231,8 +235,8 @@ def test_o_sdk_nao_faz_retry_por_conta_propria():
 
 
 def test_pior_caso_de_tempo_e_um_timeout_por_modelo():
-    """Tres modelos x uma tentativa x 30s = 90s, e nao minutos."""
-    assert len(solver.GEMINI_MODELS) * solver.GEMINI_TIMEOUT_MS == 90_000
+    """Tres modelos x uma tentativa x 20s = 60s, e nao minutos."""
+    assert len(solver.GEMINI_MODELS) * solver.GEMINI_TIMEOUT_MS == 60_000
 
 
 # Modelos reprovados por MEDICAO — nao voltam ao caminho quente sem nova medida.

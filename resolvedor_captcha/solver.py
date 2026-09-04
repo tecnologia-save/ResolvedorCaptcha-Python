@@ -536,7 +536,8 @@ def _politica(politica) -> PoliticaLatencia:
     return politica if isinstance(politica, PoliticaLatencia) else POLITICA_PADRAO
 
 
-def _make_config(schema: dict, model: str = GEMINI_MODEL, timeout_ms: int | None = None):
+def _make_config(schema: dict, model: str = GEMINI_MODEL, timeout_ms: int | None = None,
+                 sem_opcionais: bool = False):
     """GenerateContentConfig com response_schema e thinking conforme THINKING_BUDGET.
 
     THINKING_BUDGET == 0 (padrão): NÃO enviamos thinking_config — o modelo usa seu
@@ -554,8 +555,13 @@ def _make_config(schema: dict, model: str = GEMINI_MODEL, timeout_ms: int | None
         "response_mime_type": "application/json",
         "response_schema": schema,
     }
+    # `sem_opcionais` e a segunda tentativa depois de um 400: manda o
+    # minimo que a API exige. Ver o tratamento de `requisicao_invalida`
+    # em `_gemini_call` — a lista estatica de modelos sem thinking
+    # envelhece a cada release, entao a verdade vem da resposta.
     _sem_thinking = ("2.0-flash",)
-    if THINKING_BUDGET > 0 and not any(m in model for m in _sem_thinking):
+    if (not sem_opcionais and THINKING_BUDGET > 0
+            and not any(m in model for m in _sem_thinking)):
         try:
             kwargs["thinking_config"] = _gt.ThinkingConfig(thinking_budget=THINKING_BUDGET)
         except Exception:
@@ -907,14 +913,20 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
             print(f"    [captcha/{tag}] orçamento de tempo esgotado — "
                   "encerrando a cadeia de modelos.")
             break
+        sem_opcionais = False
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
             try:
                 resp = client.models.generate_content(
                     model=model,
                     contents=contents,
                     config=_make_config(schema, model,
-                                        timeout_ms=politica.timeout_efetivo_ms()),
+                                        timeout_ms=politica.timeout_efetivo_ms(),
+                                        sem_opcionais=sem_opcionais),
                 )
+                if sem_opcionais:
+                    print(f"    [captcha/{tag}] Respondeu SEM os campos "
+                          f"opcionais — o 400 vinha de thinking_config em "
+                          f"'{model}'.")
                 _premiar(model)
                 if mi > 0:
                     print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
@@ -925,6 +937,25 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                       f"{_diagnostico_erro(e, model)} | "
                       f"tentativa={attempt}/{GEMINI_TRIES_PER_MODEL}")
                 _despejar_erro_para_diagnostico(e, tag, model)
+
+                # 400 = a requisição é NOSSA, e há um suspeito nomeado no
+                # docstring de `_make_config`: estes modelos respondem
+                # INVALID_ARGUMENT a valores de `thinking_config` que não
+                # aceitam, e a lista de exclusão só cobre `2.0-flash`.
+                #
+                # Em vez de adivinhar quais modelos suportam o quê — lista que
+                # envelhece a cada release do Google —, tenta UMA vez sem os
+                # campos opcionais. Se passar, a causa era essa e fica dito no
+                # log; se não passar, o 400 é de outra coisa e a cadeia segue.
+                #
+                # Isto conserta E diagnostica: era o único jeito de saber, já
+                # que o corpo do erro nunca chega ao log por regra de higiene.
+                if (_categoria_do_erro(e) == "requisicao_invalida"
+                        and not sem_opcionais):
+                    print(f"    [captcha/{tag}] requisição inválida — repetindo "
+                          "sem os campos opcionais (thinking_config).")
+                    sem_opcionais = True
+                    continue
                 # Sobrecarga/timeout é do POOL daquele modelo, não da chamada:
                 # a segunda tentativa longa no mesmo modelo só gasta a validade
                 # do screenshot. Os logs de produção mostram exatamente isso —

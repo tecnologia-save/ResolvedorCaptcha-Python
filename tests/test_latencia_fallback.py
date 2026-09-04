@@ -363,3 +363,64 @@ def test_rodizio_gira_a_ordem_dos_modelos(monkeypatch):
         with pytest.raises(RuntimeError):
             solver._gemini_call([], {}, "k", "grid", rodizio=rodada)
         assert primeiros[0] == solver.GEMINI_MODELS[rodada % len(solver.GEMINI_MODELS)]
+
+
+# ── 400 se auto-diagnostica: repete SEM os campos opcionais ─────────────────
+#
+# Timeline da RUN-74db9dba: `status=400 | categoria=requisicao_invalida` em
+# gemini-3.1-flash-lite, nas duas tentativas, e o captcha nao foi resolvido.
+# O corpo do erro nunca chega ao log (regra de higiene), entao a unica forma de
+# saber QUAL campo a API recusa e tentar sem ele.
+#
+# O suspeito esta nomeado no docstring de `_make_config`: estes modelos
+# respondem INVALID_ARGUMENT a valores de thinking_config que nao aceitam, e a
+# lista de exclusao so cobre "2.0-flash". Manter lista estatica de quem suporta
+# o que envelhece a cada release — a verdade vem da resposta.
+
+def test_400_repete_sem_thinking_no_mesmo_modelo(monkeypatch):
+    """Segunda tentativa vai sem thinking_config, e no MESMO modelo."""
+    vistos = []
+
+    def cliente(_k):
+        class C:
+            class models:
+                @staticmethod
+                def generate_content(model, contents=None, config=None):
+                    tem_thinking = getattr(config, "thinking_config", None) is not None
+                    vistos.append((model, tem_thinking))
+                    if tem_thinking:
+                        raise RuntimeError("400 INVALID_ARGUMENT: thinking_config")
+                    class R:
+                        text = '{"ok": 1}'
+                    return R()
+        return C()
+
+    monkeypatch.setattr(solver, "_get_client", cliente)
+    monkeypatch.setattr(solver, "THINKING_BUDGET", 4096)
+    assert solver._gemini_call([], {}, "k", "grade_fused") == {"ok": 1}
+    assert len(vistos) == 2, vistos
+    assert vistos[0] == (vistos[1][0], True), "a 1a tentativa levava thinking"
+    assert vistos[1][1] is False, "a 2a tentativa tinha de ir sem thinking"
+
+
+def test_400_que_nao_e_thinking_ainda_falha(monkeypatch):
+    """Se remover o opcional nao resolve, o 400 e de outra coisa — nao mascara."""
+    def cliente(_k):
+        class C:
+            class models:
+                @staticmethod
+                def generate_content(**_kw):
+                    raise RuntimeError("400 INVALID_ARGUMENT: outra coisa")
+        return C()
+
+    monkeypatch.setattr(solver, "_get_client", cliente)
+    with pytest.raises(RuntimeError):
+        solver._gemini_call([], {}, "k", "grade_fused")
+
+
+def test_make_config_sem_opcionais_omite_thinking(monkeypatch):
+    monkeypatch.setattr(solver, "THINKING_BUDGET", 4096)
+    com = solver._make_config({}, solver.GEMINI_MODELS[0])
+    sem = solver._make_config({}, solver.GEMINI_MODELS[0], sem_opcionais=True)
+    assert getattr(com, "thinking_config", None) is not None
+    assert getattr(sem, "thinking_config", None) is None

@@ -267,3 +267,52 @@ def test_pior_caso_de_chamadas_e_um_por_modelo(monkeypatch):
     with pytest.raises(RuntimeError):
         solver._gemini_call([], {}, "k", "grade")
     assert len(chamadas) == len(solver.GEMINI_MODELS)
+
+
+# ── Classificacao por STATUS, nao por substring ──────────────────────────────
+#
+# O historico do orquestrador (04/09/2026) mostrava a MESMA sequencia de erro
+# saindo como `tempo_esgotado` numa tentativa e `requisicao_invalida` na
+# seguinte. Causa: a classificacao varria substrings no texto inteiro do erro, e
+# ("timeout", "timed out", "deadline") vinha ANTES de "400" na lista.
+
+def test_400_com_deadline_no_corpo_e_requisicao_invalida():
+    """O corpo do provedor nao decide a categoria — o status decide."""
+    erro = RuntimeError(
+        "400 INVALID_ARGUMENT: request deadline field is not supported here")
+    assert solver._categoria_do_erro(erro) == "requisicao_invalida"
+
+
+def test_400_com_deadline_no_corpo_nao_troca_de_modelo():
+    """Era o efeito caro: circulava a requisicao invalida por todos os modelos."""
+    erro = RuntimeError(
+        "400 INVALID_ARGUMENT: request deadline field is not supported here")
+    assert solver._is_overloaded_error(erro) is False
+
+
+def test_400_com_deadline_no_corpo_nao_manda_modelo_para_o_banco(monkeypatch):
+    """O pior efeito: um modelo saudavel suspenso por erro que era nosso."""
+    erro = RuntimeError(
+        "400 INVALID_ARGUMENT: request deadline field is not supported here")
+    cliente, chamadas = _cliente({m: erro for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    with pytest.raises(RuntimeError):
+        solver._gemini_call([], {}, "k", "grade")
+    assert solver._BANCO == {}
+    # So o primeiro modelo, com o retry local que o contrato ja previa.
+    assert len(chamadas) == solver.GEMINI_TRIES_PER_MODEL
+
+
+def test_status_do_atributo_vence_o_texto():
+    """Excecao do SDK traz `code`; o texto nem precisa dizer o numero."""
+    class ErroDoSDK(Exception):
+        code = 429
+    assert solver._categoria_do_erro(ErroDoSDK("overloaded")) == "limite_de_uso"
+
+
+def test_timeout_sem_texto_ainda_e_tempo_esgotado():
+    """`ReadTimeout` do httpx chega com `str(e)` vazio — so o nome da classe fala."""
+    class ReadTimeout(Exception):
+        pass
+    assert solver._categoria_do_erro(ReadTimeout()) == "tempo_esgotado"
+    assert solver._is_overloaded_error(ReadTimeout()) is True

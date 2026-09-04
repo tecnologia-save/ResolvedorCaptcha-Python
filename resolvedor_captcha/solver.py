@@ -586,14 +586,16 @@ def _is_overloaded_error(e) -> bool:
     argumento inválido. Esses não melhoram trocando de modelo, e deixá-los
     circular pela lista transformaria um erro de configuração em quatro chamadas
     inúteis e um diagnóstico pior.
+
+    O parágrafo acima sempre foi a INTENÇÃO; a implementação não a cumpria. Ela
+    procurava substrings no texto inteiro do erro, então um 400 cujo corpo
+    mencionasse "timeout" ou "deadline" — ou que trouxesse "400" em qualquer
+    campo — entrava como sobrecarga e circulava pela lista exatamente como o
+    docstring dizia que não deveria. Agora quem decide é a CATEGORIA, que vai
+    pelo status HTTP quando ele existe.
     """
-    s = str(e or "").lower()
-    return any(k in s for k in (
-        "503", "unavailable", "overloaded", "high demand",
-        "429", "resource_exhausted", "rate limit",
-        "404", "not_found", "not found", "no longer available", "not available",
-        "timeout", "timed out", "deadline",
-    ))
+    return _categoria_do_erro(e) in (
+        "indisponivel", "limite_de_uso", "modelo_ausente", "tempo_esgotado")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -612,19 +614,50 @@ def _is_overloaded_error(e) -> bool:
 # continua permitido; o que nao pode e imprimi-lo.
 
 _CATEGORIAS_ERRO = (
-    ("indisponivel",        ("503", "unavailable", "overloaded", "high demand")),
-    ("limite_de_uso",       ("429", "resource_exhausted", "rate limit")),
-    ("modelo_ausente",      ("404", "not_found", "not found", "no longer available")),
+    ("indisponivel",        ("unavailable", "overloaded", "high demand")),
+    ("limite_de_uso",       ("resource_exhausted", "rate limit")),
+    ("modelo_ausente",      ("not_found", "not found", "no longer available",
+                             "not available")),
     ("tempo_esgotado",      ("timeout", "timed out", "deadline")),
-    ("credencial",          ("401", "403", "api key", "unauthorized",
-                             "permission_denied")),
-    ("requisicao_invalida", ("400", "invalid_argument")),
+    ("credencial",          ("api key", "unauthorized", "permission_denied")),
+    ("requisicao_invalida", ("invalid_argument",)),
 )
+
+# O STATUS manda. A busca por substring so entra quando nao ha status nenhum.
+#
+# Antes a classificacao era so por substring, e a lista e ordenada: o par
+# ("timeout", "timed out", "deadline") vinha ANTES de "400". Um 400 cujo CORPO
+# mencionasse qualquer uma dessas tres palavras saia classificado como
+# `tempo_esgotado`. O historico do orquestrador mostra o sintoma direto: a mesma
+# sequencia de erro, tentativa 1 registrada como `tempo_esgotado` e tentativa 2
+# como `requisicao_invalida` — o mesmo 400, duas categorias, porque o texto do
+# corpo variava entre elas.
+#
+# Nao era so log errado. `_is_overloaded_error` usa as MESMAS substrings, entao
+# o 400 tambem passava por indisponibilidade: a cadeia percorria todos os
+# modelos com a requisicao invalida intacta, e desde `_penalizar` cada volta
+# ainda mandava um modelo saudavel para o banco de reservas.
+_CATEGORIA_POR_STATUS = {
+    400: "requisicao_invalida",
+    401: "credencial",
+    403: "credencial",
+    404: "modelo_ausente",
+    408: "tempo_esgotado",
+    429: "limite_de_uso",
+    503: "indisponivel",
+    504: "tempo_esgotado",
+}
 
 
 def _categoria_do_erro(e) -> str:
     """Categoria de vocabulario FECHADO. Nunca devolve texto do provedor."""
-    s = str(e or "").lower()
+    status = _status_do_erro(e)
+    if status is not None and status in _CATEGORIA_POR_STATUS:
+        return _CATEGORIA_POR_STATUS[status]
+    # Sem status: o NOME DA CLASSE entra junto do texto. Um estouro de tempo do
+    # httpx chega como `ReadTimeout` com `str(e)` vazio — so o texto nao
+    # classificava isso, e ele caia em `desconhecido`, que nao troca de modelo.
+    s = f"{type(e).__name__} {e or ''}".lower()
     for categoria, marcas in _CATEGORIAS_ERRO:
         if any(m in s for m in marcas):
             return categoria
@@ -641,6 +674,45 @@ def _status_do_erro(e) -> int | None:
     if achado:
         return int(achado.group(1))
     return None
+
+
+def _despejar_erro_para_diagnostico(e, tag: str, modelo: str | None = None) -> None:
+    """Grava o erro CRU em arquivo local — nunca no stdout.
+
+    A regra do bloco acima continua valendo integralmente: o log da run nao
+    recebe texto de fora. Mas ha diagnostico que so o corpo responde, e hoje ha
+    um em aberto — os 400 aparecem nos tres resolvedores (grade, grade_fused e
+    bola), com modelos diferentes recusando a MESMA requisicao em 2 segundos.
+    Isso descarta disponibilidade e aponta para um campo invalido comum as tres
+    chamadas; qual campo, so o corpo diz, e ele nunca foi gravado em lugar
+    nenhum.
+
+    Fica atras de `CAPTCHA_DEBUG_ERRO_DIR`. Sem a variavel nada e escrito e o
+    comportamento e identico ao de antes — e por isso que isto pode existir num
+    pacote de producao. Aponte para pasta LOCAL da maquina que investiga, nunca
+    para dentro de algo que suba para a plataforma.
+    """
+    destino = os.environ.get("CAPTCHA_DEBUG_ERRO_DIR", "").strip()
+    if not destino:
+        return
+    try:
+        os.makedirs(destino, exist_ok=True)
+        caminho = os.path.join(
+            destino, f"{time.strftime('%Y%m%d-%H%M%S')}-{tag}-{os.getpid()}.txt")
+        corpo = ""
+        resposta = getattr(e, "response", None)
+        for atributo in ("text", "content"):
+            bruto = getattr(resposta, atributo, None)
+            if bruto:
+                corpo = bruto if isinstance(bruto, str) else repr(bruto)
+                break
+        with open(caminho, "w", encoding="utf-8") as f:
+            f.write(f"tag={tag}\nmodelo={modelo}\ntipo={type(e).__name__}\n"
+                    f"status={_status_do_erro(e)}\n"
+                    f"categoria={_categoria_do_erro(e)}\n\n"
+                    f"--- str(e) ---\n{e}\n\n--- response ---\n{corpo}\n")
+    except Exception:  # noqa: BLE001, S110 — diagnostico nunca derruba a resolucao
+        pass
 
 
 def _diagnostico_erro(e, modelo: str | None = None) -> str:
@@ -844,6 +916,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                 print(f"    [captcha/{tag}] falha na chamada ao modelo | "
                       f"{_diagnostico_erro(e, model)} | "
                       f"tentativa={attempt}/{GEMINI_TRIES_PER_MODEL}")
+                _despejar_erro_para_diagnostico(e, tag, model)
                 # Sobrecarga/timeout é do POOL daquele modelo, não da chamada:
                 # a segunda tentativa longa no mesmo modelo só gasta a validade
                 # do screenshot. Os logs de produção mostram exatamente isso —

@@ -1125,8 +1125,11 @@ def _astra_configurado() -> bool:
     if not _AVISOU_SEM_SEGUNDO_PROVEDOR:
         _AVISOU_SEM_SEGUNDO_PROVEDOR = True
         print("    [captcha] SEM segundo provedor: OPENAI_API_KEY ausente neste "
-              "processo. Se ela foi definida DEPOIS do agente subir, ele não a "
-              "enxerga — o ambiente é copiado no nascimento do processo.")
+              "processo. Quem a injeta é o runner, a partir do Cofre da "
+              "plataforma — então o que falta é o segredo cadastrado com o "
+              "alias exato e VINCULADO a esta automação. Definir a variável na "
+              "máquina não resolve: o ambiente do agente é copiado quando ele "
+              "nasce, e a run herda o dele.")
     return False
 
 

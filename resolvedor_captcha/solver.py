@@ -1642,6 +1642,47 @@ def _area_do_desafio_se_move(page) -> bool:
         return False
 
 
+# Marcas de quantidade no enunciado. Elas dizem qual MECANICA o desafio pede, e
+# isso a geometria nao sabe.
+_MARCAS_VARIOS = ("todas", "todos", "cada ", "quantas", "quantos",
+                  "todas as imagens", "all images", "each ")
+_MARCAS_UM_SO = ("clique no ", "clique na ", "clique em um", "clique em uma",
+                 "selecione o ", "selecione a ", "click the ", "click on the ")
+
+
+def _pede_um_clique_so(instrucao: str) -> bool:
+    """O enunciado pede UM clique, ou varios?
+
+    Esta pergunta decidia por GEOMETRIA, e decidia errado. Medido em 08/09/2026,
+    o MESMO desafio "Por favor, clique na figura diferente" foi roteado de duas
+    formas conforme o tamanho em que a Receita o renderizou:
+
+        605x410  ratio 1,48  ->  imagem       ->  grade 20x20  ->  RESOLVEU
+        651x714  ratio 0,91  ->  grade_fused  ->  9 tiles      ->  falhou
+
+    `grade_fused` fatia a area em 3x3 e pergunta QUAIS tiles marcar — mecanica
+    de "selecione todas as imagens com onibus". Um desafio com 5 ou 6 formas
+    espalhadas em posicoes arbitrarias nao tem tiles: pedir tiles ali e a
+    ferramenta errada, e ela nao acerta por sorte.
+
+    Todos os enunciados vistos ate hoje sao de clique unico:
+
+        Clique no animal que a bola nunca toca
+        Clique na flor em que a abelha nunca pousa
+        Por favor, clique no icone que quebra o padrao
+        Por favor, clique na figura diferente
+
+    A marca de VARIOS vence a de UM: "clique em todas as figuras diferentes"
+    seria plural, apesar do "clique".
+    """
+    t = (instrucao or "").lower()
+    if not t:
+        return False
+    if any(m in t for m in _MARCAS_VARIOS):
+        return False
+    return any(m in t for m in _MARCAS_UM_SO)
+
+
 def _detect_challenge_type(page, timeout_ms: int = 12_000,
                            ao_falhar: str = TIPO_GRADE) -> str:
     """Detecta tipo do desafio: 'grade', 'grade_fused', 'imagem', ou 'nenhum'.
@@ -1789,6 +1830,17 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
                           f"ratio={ratio:.2f}).")
                     return TIPO_BOLA
                 # Grade 3x3 é aproximadamente quadrada (0.75–1.4); imagem livre é mais retangular
+                # O ENUNCIADO decide a MECANICA; a proporcao so desempata.
+                #
+                # Sem isto, um desafio de clique unico renderizado quase
+                # quadrado ia para o resolvedor de tiles, que pergunta "quais
+                # marcar" — e nao ha tiles para marcar.
+                if _pede_um_clique_so(instrucao_lower):
+                    print(f"    [captcha] Tipo: imagem (enunciado pede UM "
+                          f"clique, {bounds['width']:.0f}x{bounds['height']:.0f}px "
+                          f"ratio={ratio:.2f}, instrucao: "
+                          f"'{(instrucao_lower or '')[:60]}').")
+                    return "imagem"
                 if 0.75 <= ratio <= 1.4:
                     # O ENUNCIADO entra no log AQUI, e não só nos tipos
                     # reconhecidos por palavra-chave.

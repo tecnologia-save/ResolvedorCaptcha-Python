@@ -544,3 +544,56 @@ def test_enunciado_diferente_sonda_de_novo(monkeypatch):
     n1 = capturas["n"]
     solver._area_do_desafio_se_move(p)
     assert capturas["n"] > n1, "enunciado novo tinha de disparar sonda nova"
+
+
+# ── O ENUNCIADO decide a mecanica; a proporcao so desempata ────────────────
+#
+# Medido em 08/09/2026: o MESMO desafio "Por favor, clique na figura diferente"
+# foi roteado de duas formas conforme o tamanho em que a Receita o renderizou.
+#
+#     605x410  ratio 1,48  ->  imagem       ->  grade 20x20  ->  RESOLVEU
+#     651x714  ratio 0,91  ->  grade_fused  ->  9 tiles      ->  falhou
+#
+# `grade_fused` pergunta QUAIS tiles marcar — mecanica de "selecione todas as
+# imagens com onibus". Num desafio com formas espalhadas nao ha tiles.
+
+@pytest.mark.parametrize("instrucao", [
+    "Clique no animal que a bola nunca toca",
+    "Clique na flor em que a abelha nunca pousa",
+    "Por favor, clique no ícone que quebra o padrão",
+    "Por favor, clique na figura diferente",
+])
+def test_enunciados_reais_sao_de_clique_unico(instrucao):
+    """Os quatro que apareceram em producao ate hoje."""
+    assert solver._pede_um_clique_so(instrucao) is True
+
+
+@pytest.mark.parametrize("instrucao", [
+    "Selecione todas as imagens com ônibus",
+    "Clique em todas as figuras que contenham um gato",
+    "Marque cada imagem com semáforo",
+    "Select all images with a bus",
+])
+def test_selecao_multipla_nao_e_clique_unico(instrucao):
+    """A grade 3x3 de verdade continua indo para o resolvedor de tiles."""
+    assert solver._pede_um_clique_so(instrucao) is False
+
+
+def test_a_marca_de_varios_vence_a_de_um():
+    """'clique em todas' tem 'clique', e ainda assim e plural."""
+    assert solver._pede_um_clique_so("clique em todas as figuras diferentes") is False
+
+
+def test_sem_enunciado_nao_afirma_clique_unico():
+    """Sem texto, a decisao volta para a geometria — nao se inventa mecanica."""
+    assert solver._pede_um_clique_so("") is False
+    assert solver._pede_um_clique_so(None) is False
+
+
+def test_a_decisao_por_enunciado_vem_antes_da_proporcao():
+    import inspect
+    fonte = inspect.getsource(solver._detect_challenge_type)
+    pos_enunciado = fonte.index("_pede_um_clique_so(instrucao_lower)")
+    pos_ratio = fonte.index("0.75 <= ratio <= 1.4")
+    assert pos_enunciado < pos_ratio, (
+        "a proporcao voltou a decidir o que o enunciado ja respondia")

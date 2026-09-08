@@ -325,3 +325,73 @@ def test_submeter_conta(monkeypatch):
     except Exception:
         pass
     assert solver._SUBMISSOES == antes + 1, "a submissao nao foi contabilizada"
+
+
+# ── Triagem: "nao consegui" vira "nao consegui, e o que vi foi isto" ────────
+#
+# Uma amostra sozinha obriga alguem a abrir a imagem e adivinhar a mecanica.
+# Com a triagem, um formato novo chega descrito: se e animado, quantos cliques
+# pede, e se cai numa familia que ja temos resolvedor.
+
+def test_sem_a_variavel_nao_diagnostica(monkeypatch):
+    monkeypatch.delenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", raising=False)
+    chamou = {"n": 0}
+    monkeypatch.setattr(solver, "_gemini_call",
+                        lambda *a, **k: chamou.__setitem__("n", chamou["n"] + 1))
+    solver._diagnosticar_desafio(object(), "chave", "grade_fused")
+    assert chamou["n"] == 0
+
+
+def test_sem_chave_nao_diagnostica(monkeypatch, tmp_path):
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    chamou = {"n": 0}
+    monkeypatch.setattr(solver, "_gemini_call",
+                        lambda *a, **k: chamou.__setitem__("n", chamou["n"] + 1))
+    solver._diagnosticar_desafio(object(), "", "grade_fused")
+    assert chamou["n"] == 0
+
+
+def test_a_triagem_grava_o_que_decide_o_proximo_passo(monkeypatch, tmp_path):
+    """O arquivo tem de responder: e formato novo? o que ele pede?"""
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_parte_imagem", lambda _b: "imagem")
+    monkeypatch.setattr(solver, "_gemini_call", lambda *a, **k: {
+        "instrucao_lida": "Arraste a peça para o lugar certo",
+        "mecanica": "encaixar uma peca deslizante",
+        "alvos": "pecas de quebra-cabeca",
+        "acao_necessaria": "arrastar",
+        "e_animado": False,
+        "quantos_cliques": 0,
+        "familia_conhecida": False,
+        "por_que_falhou": "a automacao so sabe clicar",
+    })
+    solver._diagnosticar_desafio(object(), "chave", "desconhecido")
+    arquivos = list(tmp_path.glob("*-triagem.md"))
+    assert len(arquivos) == 1
+    texto = arquivos[0].read_text(encoding="utf-8")
+    assert "arrastar" in texto
+    assert "familia conhecida : False" in texto
+    assert "so sabe clicar" in texto
+
+
+def test_falha_na_triagem_nao_derruba_nada(monkeypatch, tmp_path):
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_parte_imagem", lambda _b: "imagem")
+
+    def explode(*_a, **_k):
+        raise RuntimeError("modelo fora do ar")
+
+    monkeypatch.setattr(solver, "_gemini_call", explode)
+    solver._diagnosticar_desafio(object(), "chave", "grade")   # nao pode levantar
+
+
+def test_a_triagem_nao_roda_dentro_do_laco_de_rodadas():
+    """Ali ainda ha orcamento a proteger, e um desafio que pode ser resolvido
+    nao precisa de autopsia."""
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    pos_chamada = fonte.index("_diagnosticar_desafio(")
+    pos_limite = fonte.index("Limite de {max_rounds} iterações atingido")
+    assert pos_chamada > pos_limite, "a triagem entrou no meio do laço"

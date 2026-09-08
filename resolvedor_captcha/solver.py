@@ -518,6 +518,93 @@ def _guardar_amostra(page, tipo: str, instrucao: str = "") -> None:
         pass
 
 
+_SCHEMA_TRIAGEM = {
+    "type": "object",
+    "properties": {
+        "instrucao_lida": {"type": "string"},
+        "mecanica": {"type": "string"},
+        "alvos": {"type": "string"},
+        "acao_necessaria": {"type": "string"},
+        "e_animado": {"type": "boolean"},
+        "quantos_cliques": {"type": "integer"},
+        "por_que_falhou": {"type": "string"},
+        "familia_conhecida": {"type": "boolean"},
+    },
+    "required": ["mecanica", "acao_necessaria", "e_animado", "quantos_cliques"],
+}
+
+_PROMPT_TRIAGEM = """Você está olhando um captcha hCaptcha que uma automação NÃO conseguiu resolver.
+Não resolva o desafio. Descreva a MECÂNICA dele, para que um humano decida se
+vale escrever um resolvedor novo.
+
+A automação já sabe lidar com esta família: "leia a instrução e clique em UM
+alvo" — seja num quadro parado (ex.: o ícone diferente dos demais) ou numa
+sequência animada (ex.: o alvo que o elemento móvel nunca alcança).
+
+Responda:
+  instrucao_lida    o enunciado, exatamente como está escrito na imagem
+  mecanica          em uma frase: o que o desafio pede que se faça
+  alvos             o que são os elementos clicáveis (ícones, fotos, animais...)
+  acao_necessaria   "clicar" | "arrastar" | "ordenar" | "digitar" | outro
+  e_animado         true se algo se move; false se a cena é estática
+  quantos_cliques   quantos elementos precisam ser clicados para responder
+  familia_conhecida true se cai na família descrita acima; false se é outra coisa
+  por_que_falhou    seu palpite do que impediu a automação de resolver
+"""
+
+
+def _diagnosticar_desafio(page, api_key: str, tipo: str, instrucao: str = "") -> None:
+    """Descreve a MECANICA de um desafio que o solver nao resolveu.
+
+    Uma amostra sozinha diz "nao consegui". Isto diz "nao consegui, e o que vi
+    foi isto" — que e a diferenca entre abrir a imagem e adivinhar, e ler uma
+    triagem pronta.
+
+    Custa UMA chamada ao modelo, so quando a resolucao ja terminou em fracasso e
+    so com `CAPTCHA_DEBUG_AMOSTRAS_DIR` definida. Nao roda dentro do laco de
+    rodadas: ali ainda ha orcamento de tempo a proteger, e um desafio que ainda
+    pode ser resolvido nao precisa de autopsia.
+    """
+    destino = os.environ.get("CAPTCHA_DEBUG_AMOSTRAS_DIR", "").strip()
+    if not destino or not api_key:
+        return
+    try:
+        png, _caixa = _capturar_desafio(page)
+        if not png:
+            return
+        conteudo = [_PROMPT_TRIAGEM, _parte_imagem(png)]
+        # Politica propria e curta: isto e diagnostico, nao resolucao. Se
+        # demorar, o valor dele ja passou.
+        d = _gemini_call(conteudo, _SCHEMA_TRIAGEM, api_key, "triagem",
+                         PoliticaLatencia(timeout_ms=15_000,
+                                          fim=time.monotonic() + 20.0))
+        marca = f"{time.strftime('%Y%m%d-%H%M%S')}-{tipo}"
+        os.makedirs(destino, exist_ok=True)
+        linhas = [
+            f"# Triagem — desafio nao resolvido ({tipo})",
+            "",
+            f"- instrucao na tela : {instrucao or d.get('instrucao_lida', '?')}",
+            f"- mecanica          : {d.get('mecanica', '?')}",
+            f"- alvos             : {d.get('alvos', '?')}",
+            f"- acao necessaria   : {d.get('acao_necessaria', '?')}",
+            f"- animado           : {d.get('e_animado')}",
+            f"- cliques           : {d.get('quantos_cliques')}",
+            f"- familia conhecida : {d.get('familia_conhecida')}",
+            f"- por que falhou    : {d.get('por_que_falhou', '?')}",
+            "",
+            "Familia conhecida = a automacao ja tem resolvedor para a mecanica.",
+            "Se for false, e formato novo e precisa de trabalho.",
+        ]
+        with open(os.path.join(destino, f"{marca}-triagem.md"), "w",
+                  encoding="utf-8") as f:
+            f.write(chr(10).join(linhas) + chr(10))
+        print(f"    [captcha] Triagem gravada | familia_conhecida="
+              f"{d.get('familia_conhecida')} acao={d.get('acao_necessaria')!r} "
+              f"cliques={d.get('quantos_cliques')} animado={d.get('e_animado')}")
+    except Exception:  # noqa: BLE001, S110 — autopsia nunca derruba nada
+        pass
+
+
 def _salvar_debug(png: bytes, sufixo: str = "") -> None:
     """Salva o PNG em debug_screenshots/ para inspeção visual do que foi enviado ao Gemini."""
     global _debug_counter
@@ -3647,6 +3734,8 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
         fim=None if deadline_s is None else time.monotonic() + deadline_s,
     )
 
+    ultimo_tipo = TIPO_DESCONHECIDO
+
     # Checkbox OU desafio, no mesmo prazo — o que aparecer primeiro. Uma grade
     # já aberta começa a ser classificada de imediato.
     inicio = _aguardar_desafio_ou_checkbox(page, timeout_ms=10_000)
@@ -3665,6 +3754,7 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
 
         timeout_det = 10_000 if rnd == 1 else 5_000
         tipo = _detect_challenge_type(page, timeout_ms=timeout_det)
+        ultimo_tipo = tipo
 
         if tipo == "nenhum":
             print("    [captcha] Nenhum desafio ativo. Captcha concluído.")
@@ -3698,6 +3788,9 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
         print(f"    [captcha] Desafio ainda ativo após iteração {rnd}. Continuando...")
 
     print(f"    [captcha] Limite de {max_rounds} iterações atingido.")
+    # Autopsia: aqui a resolucao JA falhou, entao nao ha orcamento a proteger.
+    # Sem CAPTCHA_DEBUG_AMOSTRAS_DIR isto nao acontece.
+    _diagnosticar_desafio(page, api_key, ultimo_tipo, _extrair_instrucao(page))
     return False
 
 

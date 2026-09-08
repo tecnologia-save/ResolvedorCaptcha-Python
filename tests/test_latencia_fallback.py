@@ -158,13 +158,12 @@ def test_sucesso_no_primeiro_modelo_faz_uma_chamada(monkeypatch):
 
 def test_ordem_dos_modelos_preservada():
     """A ordem veio de medicao (17/08/2026), filtrada por IDs estaveis."""
-    assert solver.GEMINI_MODELS == [
+    assert solver.GEMINI_MODELS_PADRAO == [
         "gemini-3.5-flash-lite",
         "gemini-3.5-flash",
         "gemini-3.1-flash-lite",
     ]
-    assert solver.GEMINI_MODEL == solver.GEMINI_MODELS[0]
-    assert len(solver.GEMINI_MODELS) == 3
+    assert len(solver.GEMINI_MODELS_PADRAO) == 3
 
 
 # ── So ID estavel no caminho quente ──────────────────────────────────────────
@@ -176,18 +175,18 @@ def test_ordem_dos_modelos_preservada():
 
 def test_nenhum_alias_latest_no_caminho_quente():
     """`-latest` troca de versao por tras: o que roda deixa de ser o medido."""
-    assert [m for m in solver.GEMINI_MODELS if m.endswith("-latest")] == []
+    assert [m for m in solver.GEMINI_MODELS_PADRAO if m.endswith("-latest")] == []
 
 
 def test_nenhum_id_de_preview_no_caminho_quente():
     """`-preview` pode ser aposentado sem aviso."""
-    assert [m for m in solver.GEMINI_MODELS if "preview" in m] == []
+    assert [m for m in solver.GEMINI_MODELS_PADRAO if "preview" in m] == []
 
 
 def test_nenhum_modelo_pro_no_caminho_quente():
     """Peso desnecessario para uma tarefa visual simples, e o pool menos
     disponivel dos medidos — 3/16 e 4/16."""
-    assert [m for m in solver.GEMINI_MODELS if "pro" in m] == []
+    assert [m for m in solver.GEMINI_MODELS_PADRAO if "pro" in m] == []
 
 
 def test_todo_modelo_do_caminho_quente_tem_medicao_de_imagem():
@@ -255,7 +254,8 @@ MODELOS_REPROVADOS = (
 
 def test_nenhum_modelo_reprovado_no_caminho_quente():
     """Esta automacao nao roda com modelo instavel: a lista padrao e so aprovado."""
-    reprovados_na_lista = [m for m in solver.GEMINI_MODELS if m in MODELOS_REPROVADOS]
+    reprovados_na_lista = [m for m in solver.GEMINI_MODELS_PADRAO
+                           if m in MODELOS_REPROVADOS]
     assert reprovados_na_lista == []
 
 
@@ -424,3 +424,95 @@ def test_make_config_sem_opcionais_omite_thinking(monkeypatch):
     sem = solver._make_config({}, solver.GEMINI_MODELS[0], sem_opcionais=True)
     assert getattr(com, "thinking_config", None) is not None
     assert getattr(sem, "thinking_config", None) is None
+
+
+# ── Carta de acuracia: segundo provedor, so onde o Gemini ja desistiu ───────
+#
+# Pedido do Jean: "chamar o astra quando o gemini nao consegue resolver". O
+# comentario de GEMINI_MODELS ja registrava o buraco — a cadeia so troca de
+# modelo por DISPONIBILIDADE, nunca por resposta errada.
+#
+# A garantia que estes testes defendem e a que ele pediu junto: "nao altere
+# nada do gemini que funciona hoje".
+
+def _sem_openai(monkeypatch):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+
+
+def _com_openai(monkeypatch, resposta=None, explode=None):
+    monkeypatch.setenv("OPENAI_API_KEY", "chave-de-teste")
+    chamadas = {"n": 0}
+
+    def falso(contents, schema, tag, politica=None):
+        chamadas["n"] += 1
+        if explode:
+            raise explode
+        return resposta or {"ok": "astra"}
+
+    monkeypatch.setattr(solver, "_astra_call", falso)
+    return chamadas
+
+
+def test_o_caminho_feliz_do_gemini_NAO_chama_o_segundo_provedor(monkeypatch):
+    """Se o Gemini responde, o segundo provedor nem existe."""
+    chamadas = _com_openai(monkeypatch)
+    cliente, _ = _cliente({solver.GEMINI_MODELS[0]: {"ok": 1}})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    assert solver._gemini_call([], {}, "k", "grade") == {"ok": 1}
+    assert chamadas["n"] == 0
+
+
+def test_rodadas_dentro_do_rodizio_nao_chamam_o_segundo_provedor(monkeypatch):
+    """Enquanto houver modelo do Gemini nao ouvido, e o Gemini que responde."""
+    chamadas = _com_openai(monkeypatch)
+    cliente, _ = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    for rodada in range(len(solver.GEMINI_MODELS)):
+        solver._BANCO.clear()
+        solver._gemini_call([], {}, "k", "grade", rodizio=rodada)
+    assert chamadas["n"] == 0, "o segundo provedor entrou cedo demais"
+
+
+def test_esgotado_o_rodizio_o_segundo_provedor_responde(monkeypatch):
+    """A rodada que repetiria um modelo ja ouvido vai para o outro provedor."""
+    chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
+    cliente, _ = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    r = solver._gemini_call([], {}, "k", "grade", rodizio=len(solver.GEMINI_MODELS))
+    assert r == {"ok": "astra"}
+    assert chamadas["n"] == 1
+
+
+def test_sem_chave_da_openai_nada_muda(monkeypatch):
+    """Quem nao configurou o segundo provedor tem o comportamento de sempre."""
+    _sem_openai(monkeypatch)
+    cliente, chamadas_gemini = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    r = solver._gemini_call([], {}, "k", "grade", rodizio=len(solver.GEMINI_MODELS) + 2)
+    assert r == {"ok": 1}
+    assert chamadas_gemini, "sem OpenAI, o Gemini tem de responder"
+
+
+def test_falha_do_segundo_provedor_volta_para_o_gemini(monkeypatch):
+    """Ele e rede, nao substituto: se cair, o Gemini ainda e tentado."""
+    _com_openai(monkeypatch, explode=RuntimeError("503 unavailable"))
+    cliente, chamadas_gemini = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    r = solver._gemini_call([], {}, "k", "grade", rodizio=len(solver.GEMINI_MODELS))
+    assert r == {"ok": 1}
+    assert chamadas_gemini
+
+
+def test_a_bola_nunca_alcanca_o_segundo_provedor():
+    """`_solve_bola` tem 2 rodadas e o rodizio tem 3 modelos.
+
+    Medido em 08/09/2026: astra fez 0/3 na animacao e 3/3 em imagem unica. Que
+    a bola nao o alcance nao e sorte — e consequencia de max_rounds=2, e este
+    teste existe para que aumentar esse teto seja uma decisao consciente.
+    """
+    import inspect
+    fonte = inspect.getsource(solver._solve_bola)
+    par = inspect.signature(solver._solve_bola).parameters["max_rounds"]
+    assert par.default <= len(solver.GEMINI_MODELS), (
+        "a bola passou a alcancar o segundo provedor, onde ele fez 0/3")
+    assert "rodizio=rnd - 1" in fonte

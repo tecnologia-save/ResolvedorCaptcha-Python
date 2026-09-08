@@ -83,11 +83,23 @@ except ImportError:
 #     motivo de troca e a chamada cai para o próximo — o custo é uma tentativa.
 # Sobra uma cadeia de três, toda ela 16/16 na medição de 17/08/2026.
 # Sobrescrevível por ambiente: GEMINI_MODELS="modelo1,modelo2,...".
-GEMINI_MODELS          = [m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()] or [
+# A lista PADRAO fica separada da resolvida, e nao e detalhe: as guardas desta
+# lista (nada de `-latest`, nada de `-preview`, nada de reprovado por medicao)
+# viravam letra morta quando alguem sobrescrevia por ambiente — os testes liam a
+# lista ja resolvida e passavam a validar a escolha do ambiente, nao a nossa.
+# Aconteceu em 08/09/2026: com GEMINI_MODELS apontando para um modelo REPROVADO,
+# tres testes cairam e so entao o problema apareceu.
+GEMINI_MODELS_PADRAO   = [
     "gemini-3.5-flash-lite",   # primário: 16/16, 2,2s — o mais rápido e previsível
     "gemini-3.5-flash",        # fallback: 16/16, 2,7s — flash COMPLETO, pool distinto
     "gemini-3.1-flash-lite",   # último recurso: 16/16, mas com cauda de 25,4s
 ]
+
+# Sobrescrevivel por ambiente: GEMINI_MODELS="modelo1,modelo2,...". Util para
+# medir um candidato em producao sem mexer em codigo — mas note que a
+# sobrescrita NAO passa pelas guardas acima. E ferramenta de medicao, nao de
+# configuracao permanente.
+GEMINI_MODELS          = [m.strip() for m in os.environ.get("GEMINI_MODELS", "").split(",") if m.strip()] or list(GEMINI_MODELS_PADRAO)
 GEMINI_MODEL           = GEMINI_MODELS[0]
 
 # "Thinking" (raciocínio interno do Gemini antes de responder). Para captcha,
@@ -931,6 +943,107 @@ def preparar_modelos(api_key: str | None = None,
     return vivos
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Carta de ACURACIA: um segundo provedor, para quando o Gemini responde e erra
+# ──────────────────────────────────────────────────────────────────────────────
+#
+# O comentario de GEMINI_MODELS registra o buraco: "`_gemini_call` so troca de
+# modelo em erro de DISPONIBILIDADE (503/404/timeout), nunca por resposta
+# errada. O pro era a 'carta de acuracia' quando os flash erram, mas esse papel
+# nunca existiu de fato". Tentar preenche-lo com outro Gemini falhou porque um
+# modelo alcancado so quando os outros caem precisa ser o MAIS disponivel, e o
+# pro era o menos.
+#
+# Um provedor DIFERENTE resolve o que outro Gemini nao resolvia:
+#   - cota e pool independentes — um 429 do Google nao o afeta;
+#   - nao deterministico (recusa temperature=0), entao repetir tem valor, ao
+#     contrario do Gemini com temperature=0, onde a mesma imagem no mesmo modelo
+#     devolve byte a byte a mesma resposta.
+#
+# QUANDO ele entra: so depois que o rodizio ja ouviu TODOS os modelos do Gemini.
+# Com 3 modelos, as rodadas 1-3 ouvem os tres e a 4a em diante repetiria um deles
+# — rodada que hoje e desperdicio garantido. O astra ocupa esse espaco, nao o de
+# ninguem.
+#
+# Isso distribui sozinho da forma medida em 08/09/2026:
+#     _solve_bola    (2 rodadas) nunca o alcanca — astra fez 0/3 na animacao
+#     _solve_imagem  (5 rodadas) alcanca na 4a   — astra fez 3/3 em imagem unica
+#
+# Sem OPENAI_API_KEY, nada disso existe e o comportamento e o de antes.
+OPENAI_MODEL_PADRAO = "gpt-6-astra"
+
+
+def _astra_configurado() -> bool:
+    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
+
+
+def _contents_para_openai(contents: list, schema: dict) -> list:
+    """Traduz o `contents` do Gemini para o formato de mensagem da OpenAI.
+
+    Os solvers montam `contents` com strings e `Part.from_bytes` do SDK do
+    Google. Traduzir aqui — e nao neles — e o que mantem os cinco resolvedores
+    intocados.
+
+    O schema vai no TEXTO porque o modo `json_object` da OpenAI exige a palavra
+    "json" na mensagem e nao aceita `response_schema`. Medido: sem isso a API
+    recusa com 400.
+    """
+    import base64
+    import json as _json
+    blocos = []
+    for parte in contents:
+        if isinstance(parte, str):
+            blocos.append({"type": "text", "text": parte})
+            continue
+        dados = mime = None
+        for atrib in ("inline_data", "_inline_data"):
+            inline = getattr(parte, atrib, None)
+            if inline is not None:
+                dados = getattr(inline, "data", None)
+                mime = getattr(inline, "mime_type", None) or "image/jpeg"
+                break
+        if dados:
+            b64 = base64.b64encode(dados).decode("ascii")
+            blocos.append({
+                "type": "image_url",
+                # `detail: high` desliga a reducao automatica da OpenAI. Sem
+                # isso o modelo nao le a grade sobreposta, que e de onde sai a
+                # posicao do clique.
+                "image_url": {"url": f"data:{mime};base64,{b64}", "detail": "high"},
+            })
+    blocos.append({"type": "text", "text":
+                   "Responda em JSON, um unico objeto, seguindo exatamente este "
+                   "schema:" + chr(10) + _json.dumps(schema, ensure_ascii=False) +
+                   chr(10) + "Nada de texto fora do JSON."})
+    return blocos
+
+
+def _astra_call(contents: list, schema: dict, tag: str,
+                politica: PoliticaLatencia | None = None) -> dict:
+    """Uma chamada ao segundo provedor. Levanta como qualquer outra falha."""
+    import json as _json
+
+    from openai import OpenAI
+    chave = os.environ.get("OPENAI_API_KEY", "").strip()
+    modelo = os.environ.get("OPENAI_MODEL", "").strip() or OPENAI_MODEL_PADRAO
+    base = os.environ.get("OPENAI_BASE_URL", "").strip() or None
+    politica = _politica(politica)
+    cliente = OpenAI(api_key=chave, base_url=base,
+                     timeout=politica.timeout_efetivo_ms() / 1000)
+    print(f"    [captcha/{tag}] Gemini não fechou — perguntando ao segundo "
+          f"provedor.")
+    # Sem `temperature`: este modelo recusa 0 ("Only the default (1) value is
+    # supported") e responder com o padrao e o que o torna util aqui — duas
+    # perguntas iguais podem dar respostas diferentes.
+    resp = cliente.chat.completions.create(
+        model=modelo,
+        messages=[{"role": "user",
+                   "content": _contents_para_openai(contents, schema)}],
+        response_format={"type": "json_object"},
+    )
+    return _json.loads(resp.choices[0].message.content)
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None,
                  rodizio: int = 0) -> dict:
@@ -948,6 +1061,15 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # modelo. Com temperature=0.0 a mesma imagem no mesmo modelo devolve a
     # mesma resposta — repetir "confianca baixa" cinco vezes no mesmo modelo
     # era garantido nao mudar nada, so gastar chamada.
+    # Esgotado o rodizio, a proxima rodada repetiria um modelo ja ouvido com a
+    # mesma imagem — resposta identica garantida. E o espaco onde o segundo
+    # provedor cabe sem tirar o lugar de ninguem.
+    if rodizio >= len(ativos) and ativos and _astra_configurado():
+        try:
+            return _astra_call(contents, schema, tag, politica)
+        except Exception as e:  # noqa: BLE001
+            print(f"    [captcha/{tag}] segundo provedor falhou | "
+                  f"{_diagnostico_erro(e)} — voltando ao Gemini.")
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
         ativos = ativos[giro:] + ativos[:giro]

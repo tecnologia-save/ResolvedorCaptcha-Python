@@ -1555,6 +1555,18 @@ BOLA_SONDA_AMOSTRAS = 7
 BOLA_SONDA_DIF_MIN = 40         # por canal, para ignorar recompressão
 
 
+# Memoria da sonda, por DESAFIO. Sem isto ela repete a janela inteira a cada
+# iteracao do laco de `solve_hcaptcha` — sao ate 6 — e 7 amostras viram 42
+# screenshots. Foi o que o Jean viu como "trocentos prints", e a culpa e da
+# mudanca que ampliou a janela: com 2 amostras o desperdicio passava
+# despercebido, com 7 nao passa.
+#
+# A chave e o ENUNCIADO: se o desafio mudou, o texto muda junto e a memoria se
+# invalida sozinha. Se o texto nao mudou, a resposta de "isto se mexe?" tambem
+# nao mudou — a natureza do desafio nao oscila entre iteracoes.
+_SONDA_MEMORIA: dict = {}
+
+
 def _area_do_desafio_se_move(page) -> bool:
     """Dois screenshots com intervalo curto: a área do desafio muda sozinha?
 
@@ -1574,6 +1586,16 @@ def _area_do_desafio_se_move(page) -> bool:
     """
     if not _PIL:
         return False
+    chave = ""
+    try:
+        chave = (_prompt_do_desafio(page) or "")[:120]
+    except Exception:  # noqa: BLE001
+        chave = ""
+    if chave and chave in _SONDA_MEMORIA:
+        lembrado = _SONDA_MEMORIA[chave]
+        print(f"    [captcha] Sonda de movimento: "
+              f"{'animado' if lembrado else 'estático'} (lembrado deste desafio).")
+        return lembrado
     try:
         loc = _get_challenge_element_locator(page)
         caixa = loc.bounding_box()
@@ -1607,10 +1629,14 @@ def _area_do_desafio_se_move(page) -> bool:
                 print(f"    [captcha] Sonda de movimento: {fracao * 100:.2f}% dos "
                       f"pixels mudaram em {i * BOLA_SONDA_INTERVALO_S:.2f}s "
                       f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%) — animado.")
+                if chave:
+                    _SONDA_MEMORIA[chave] = True
                 return True
         print(f"    [captcha] Sonda de movimento: máximo {maior * 100:.2f}% em "
               f"{(BOLA_SONDA_AMOSTRAS - 1) * BOLA_SONDA_INTERVALO_S:.1f}s "
               f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%) — estático.")
+        if chave:
+            _SONDA_MEMORIA[chave] = False
         return False
     except Exception:  # noqa: BLE001 — sonda nunca derruba a classificação
         return False
@@ -3762,7 +3788,8 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 
 def solve_hcaptcha(page, max_rounds: int = 6, *,
                    gemini_timeout_ms: int | None = None,
-                   deadline_s: float | None = None) -> bool:
+                   deadline_s: float | None = None,
+                   tipo_ja_classificado: str | None = None) -> bool:
     """Resolve hCaptcha na página.
 
     `gemini_timeout_ms` e `deadline_s` são o ORÇAMENTO DE TEMPO desta chamada.
@@ -3806,8 +3833,32 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             return False
         print(f"    [captcha] === Iteração {rnd}/{max_rounds} ===")
 
-        timeout_det = 10_000 if rnd == 1 else 5_000
-        tipo = _detect_challenge_type(page, timeout_ms=timeout_det)
+        # Quem chama pode JA ter classificado — e nesse caso reclassificar e
+        # pior do que redundante.
+        #
+        # A lib de login classifica para decidir a politica ("este tipo pode ser
+        # tentado?") e o comentario dela diz "classificacao UMA vez, aqui". Mas
+        # este laco reclassificava por dentro, em silencio, e era a SEGUNDA
+        # decisao que escolhia o resolvedor. Duas decisoes independentes sobre a
+        # mesma tela podem discordar — e discordaram em producao em 08/09/2026:
+        #
+        #     14:45:38  sonda 0,33%  ->  bola_em_movimento   (lib de login)
+        #     14:45:43  sonda 0,25%  ->  grade_fused         (aqui)
+        #
+        # Limiar em 0,3%: caiu dos dois lados. O desafio animado foi para o
+        # resolvedor de quadro parado, que respondeu tres vezes bem e teve as
+        # tres respostas descartadas pelo guardiao de frescor — porque num
+        # desafio que se mexe a impressao digital muda sempre.
+        #
+        # So vale para a PRIMEIRA iteracao: da segunda em diante o desafio pode
+        # ter mudado de verdade, e ai reclassificar e o certo.
+        if rnd == 1 and tipo_ja_classificado:
+            tipo = tipo_ja_classificado
+            print(f"    [captcha] Tipo informado por quem chamou: {tipo} "
+                  "(sem reclassificar).")
+        else:
+            timeout_det = 10_000 if rnd == 1 else 5_000
+            tipo = _detect_challenge_type(page, timeout_ms=timeout_det)
         ultimo_tipo = tipo
 
         if tipo == "nenhum":

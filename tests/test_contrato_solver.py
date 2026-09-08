@@ -474,3 +474,73 @@ def test_a_sonda_sai_cedo_quando_detecta():
     fonte = inspect.getsource(solver._area_do_desafio_se_move)
     corpo = fonte[fonte.index("for i in range(1, BOLA_SONDA_AMOSTRAS)"):]
     assert "return True" in corpo, "sem saida cedo, toda deteccao custa a janela toda"
+
+
+# ── A sonda nao pode custar caro por repeticao ──────────────────────────────
+#
+# Ampliar a janela de 2 para 7 amostras consertou a confiabilidade e criou um
+# desperdicio: `_detect_challenge_type` roda a CADA iteracao de
+# `solve_hcaptcha` — sao ate 6 — entao 7 amostras viravam 42 screenshots.
+# Reportado como "trocentos prints".
+
+def test_a_sonda_lembra_o_resultado_do_mesmo_desafio(monkeypatch):
+    capturas = {"n": 0}
+
+    class Loc:
+        def bounding_box(self):
+            return {"x": 0, "y": 0, "width": 10, "height": 10}
+
+    class Pagina:
+        def screenshot(self, **_kw):
+            capturas["n"] += 1
+            import io as _io
+
+            from PIL import Image
+            buf = _io.BytesIO()
+            Image.new("RGB", (10, 10)).save(buf, "PNG")
+            return buf.getvalue()
+
+    solver._SONDA_MEMORIA.clear()
+    monkeypatch.setattr(solver, "_get_challenge_element_locator", lambda _p: Loc())
+    monkeypatch.setattr(solver, "_prompt_do_desafio", lambda _p: "mesmo enunciado")
+    monkeypatch.setattr(solver.time, "sleep", lambda _s: None)
+
+    p = Pagina()
+    solver._area_do_desafio_se_move(p)
+    apos_primeira = capturas["n"]
+    for _ in range(5):
+        solver._area_do_desafio_se_move(p)
+    assert capturas["n"] == apos_primeira, (
+        "a sonda repetiu a janela inteira — e isso vira dezenas de screenshots")
+
+
+def test_enunciado_diferente_sonda_de_novo(monkeypatch):
+    """Se o desafio mudou, a resposta anterior nao vale mais."""
+    capturas = {"n": 0}
+
+    class Loc:
+        def bounding_box(self):
+            return {"x": 0, "y": 0, "width": 10, "height": 10}
+
+    class Pagina:
+        def screenshot(self, **_kw):
+            capturas["n"] += 1
+            import io as _io
+
+            from PIL import Image
+            buf = _io.BytesIO()
+            Image.new("RGB", (10, 10)).save(buf, "PNG")
+            return buf.getvalue()
+
+    solver._SONDA_MEMORIA.clear()
+    textos = iter(["primeiro desafio", "segundo desafio"])
+    monkeypatch.setattr(solver, "_get_challenge_element_locator", lambda _p: Loc())
+    monkeypatch.setattr(solver, "_prompt_do_desafio",
+                        lambda _p: next(textos, "segundo desafio"))
+    monkeypatch.setattr(solver.time, "sleep", lambda _s: None)
+
+    p = Pagina()
+    solver._area_do_desafio_se_move(p)
+    n1 = capturas["n"]
+    solver._area_do_desafio_se_move(p)
+    assert capturas["n"] > n1, "enunciado novo tinha de disparar sonda nova"

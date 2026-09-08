@@ -3534,6 +3534,46 @@ BOLA_ESC_BAIXA = 0.30
 # media" de 51 px vale 356 — por isso o piso absoluto.
 BOLA_TRANSICAO_MIN_PX = 20_000
 
+# CAPTURA LONGA, da segunda rodada em diante.
+#
+# Medido em 08/09/2026 contra os quadros reais do desafio da abelha, capturados
+# pela coleta automatica: em TODAS as tentativas — Gemini e segundo provedor,
+# quatro escalas diferentes, tres contagens de quadros — o modelo via a abelha
+# visitar apenas 2 ou 3 de 5 flores. Sem ver a visita, a eliminacao nao fecha, e
+# o criterio de seguranca corretamente impede o chute.
+#
+# Nao era escala (0,30 a 0,85 deram o mesmo) nem modelo (os dois falharam
+# igual). Sao os 7 s de captura, que pegam um trecho do ciclo em que ela nao
+# passa nas outras flores. A abelha e MAIS DIFICIL que a bola, nao uma variacao
+# dela: a bola mudava 0,90-2,12% dos pixels entre quadros e a abelha muda
+# 0,27-0,42% — menor, mais rapida, e pausa menos.
+#
+# PROGRESSIVO, e nao fixo: a rodada 1 segue curta, e so quem nao fechou paga a
+# captura longa. O formato que ja funciona nao fica mais lento.
+#
+# 30 x 0,5 s = 15 s cobrem ~1,5 ciclo de 9,9 s, contra 0,7 ciclo dos 7 s. O
+# payload NAO cresce: a selecao continua mandando 8 quadros ao modelo — o que
+# muda e de qual janela eles saem.
+#
+# A JANELA E LIMITADA PELO PORTAL, nao pelo que seria ideal. Aritmetica do pior
+# caso na representacao, com os tempos medidos:
+#
+#     rodada 1 (7 s)   abertura 5,6 + captura 7 + preparo 1 + chamada 14 + 3
+#                      = 30,6 s
+#     rodada 2 (15 s)  captura 15 + preparo 1 + chamada 14 + espera 3 = 33,0 s
+#     total                                                            63,6 s
+#
+# Com 21 s na segunda seriam 69,6 s — acima do teto de 60 s e encostando nos
+# 70,3 s da maior representacao CONFIRMADA no historico. 15 s e o maximo que
+# cabe ali.
+#
+# No LOGIN esse relogio nao existe, e a janela longa caberia com folga. Mas o
+# login hoje chama `solve_hcaptcha` SEM deadline, e `_solve_bola` se recusa a
+# rodar sem orcamento — entao o formato animado nao e nem tentado la. Enquanto
+# isso nao mudar, a captura longa so existe na representacao, apertada.
+BOLA_FRAMES_LONGO = 30
+BOLA_INTERVALO_LONGO_S = 0.5
+
 _SCHEMA_BOLA = {
     "type": "object",
     "properties": {
@@ -3801,14 +3841,22 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
         if not _challenge_visible(page):
             return _sumiu("bola", marca_submissoes)
 
-        print(f"    [captcha/bola] Rodada {rnd}/{max_rounds} — capturando animação...")
+        # Rodada 1 curta; da 2a em diante, janela longa. Quem fechou na
+        # primeira nao paga por isto.
+        longa = rnd > 1
+        n_quadros = BOLA_FRAMES_LONGO if longa else BOLA_FRAMES
+        intervalo = BOLA_INTERVALO_LONGO_S if longa else BOLA_INTERVALO_S
+        print(f"    [captcha/bola] Rodada {rnd}/{max_rounds} — capturando "
+              f"{n_quadros} quadros em {n_quadros * intervalo:.0f}s"
+              f"{' (janela LONGA)' if longa else ''}...")
         enunciado_origem = _prompt_do_desafio(page)
         # O enunciado vai para o modelo LITERAL. E o que faz este resolvedor
         # servir "a bola nunca toca" e "a abelha nunca pousa" sem saber o que e
         # bola nem abelha.
         instrucao = _extrair_instrucao(page)
         print(f"    [captcha/bola] Instrução: '{_limpar_texto(instrucao)}'")
-        frames, caixa = _capturar_frames_bola(page)
+        frames, caixa = _capturar_frames_bola(page, n=n_quadros,
+                                              intervalo_s=intervalo)
         if len(frames) < 5 or not caixa:
             print("    [captcha/bola] Poucos quadros capturados — retentando.")
             continue

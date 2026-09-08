@@ -213,3 +213,63 @@ def test_limpar_texto_segue_valendo_para_texto_do_modelo():
     conteudo pedido ao modelo, nao mensagem de erro do provedor.
     """
     assert solver._limpar_texto("resumo   da\n tarefa") == "resumo da tarefa"
+
+
+# ── Coleta de amostras: util, mas com freio ─────────────────────────────────
+#
+# Uma coleta anterior tirava 40 screenshots a cada classificacao, dentro de
+# `detectar_tipo_captcha` — que a lib de login chama REPETIDAMENTE enquanto
+# aguarda o desfecho. A run ficava capturando sem parar, e os 20s saiam ANTES
+# de o relogio do orcamento comecar a contar.
+
+def test_sem_a_variavel_nao_guarda_nada(monkeypatch, tmp_path):
+    monkeypatch.delenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", raising=False)
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), "grade_fused")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_guarda_UMA_por_tipo_por_processo(monkeypatch, tmp_path):
+    """Uma por tipo — nao uma por rodada. O laco chama isto a cada iteracao."""
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_extrair_instrucao", lambda _p: "quebra o padrao")
+    solver._AMOSTRAS_GUARDADAS.clear()
+    for _ in range(5):
+        solver._guardar_amostra(object(), "grade_fused")
+    pngs = list(tmp_path.glob("*.png"))
+    assert len(pngs) == 1, [p.name for p in pngs]
+
+
+def test_tipos_diferentes_geram_amostras_diferentes(monkeypatch, tmp_path):
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_extrair_instrucao", lambda _p: "x")
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), "grade_fused")
+    solver._guardar_amostra(object(), "bola_em_movimento")
+    assert len(list(tmp_path.glob("*.png"))) == 2
+
+
+def test_o_enunciado_vai_junto(monkeypatch, tmp_path):
+    """E o enunciado que indexa o catalogo: a imagem muda, o texto se repete."""
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_extrair_instrucao",
+                        lambda _p: "clique no icone que quebra o padrao")
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), "grade_fused")
+    txts = list(tmp_path.glob("*.txt"))
+    assert len(txts) == 1
+    assert "quebra o padrao" in txts[0].read_text(encoding="utf-8")
+
+
+def test_falha_na_coleta_nao_derruba_a_resolucao(monkeypatch, tmp_path):
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+
+    def explode(_p):
+        raise RuntimeError("captura falhou")
+
+    monkeypatch.setattr(solver, "_capturar_desafio", explode)
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), "grade_fused")   # nao pode levantar

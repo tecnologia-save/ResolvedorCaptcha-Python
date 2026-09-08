@@ -461,6 +461,51 @@ _DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug_screenshots")
 _debug_counter: int = 0
 
 
+_AMOSTRAS_GUARDADAS: set = set()
+
+
+def _guardar_amostra(page, tipo: str, instrucao: str = "") -> None:
+    """Guarda UMA amostra do desafio que o solver nao conseguiu resolver.
+
+    Existe porque melhorar um resolvedor exige iterar contra o desafio REAL, e
+    sem amostra so resta gastar run atras de run — foi assim que o desafio da
+    bola foi de 0 para 3/3, testando offline contra quadros arquivados.
+
+    Uma coleta anterior fazia isso sem freio: 40 screenshots a cada
+    classificacao, dentro de `detectar_tipo_captcha`, que a lib de login chama
+    REPETIDAMENTE enquanto aguarda o desfecho. Na pratica a run ficava
+    capturando sem parar, e os 20s de captura saiam ANTES de o relogio do
+    orcamento comecar. Por isso aqui:
+
+      - atras de `CAPTCHA_DEBUG_AMOSTRAS_DIR`: sem a variavel, nada acontece e
+        o comportamento e identico ao de antes;
+      - UMA por tipo por processo, nao uma por rodada;
+      - so no caminho em que o solver JA desistiu, onde nao ha mais orcamento
+        a proteger;
+      - um screenshot, nao quarenta.
+
+    Salva o ENUNCIADO junto. E ele que indexa o catalogo: as imagens mudam a
+    cada desafio, o texto da instrucao se repete.
+    """
+    destino = os.environ.get("CAPTCHA_DEBUG_AMOSTRAS_DIR", "").strip()
+    if not destino or tipo in _AMOSTRAS_GUARDADAS:
+        return
+    _AMOSTRAS_GUARDADAS.add(tipo)
+    try:
+        os.makedirs(destino, exist_ok=True)
+        marca = f"{time.strftime('%Y%m%d-%H%M%S')}-{tipo}"
+        png, _caixa = _capturar_desafio(page)
+        if png:
+            with open(os.path.join(destino, f"{marca}.png"), "wb") as f:
+                f.write(png)
+        texto = instrucao or _extrair_instrucao(page) or ""
+        with open(os.path.join(destino, f"{marca}.txt"), "w", encoding="utf-8") as f:
+            f.write(texto)
+        print(f"    [captcha] Amostra guardada em {destino} ({marca}).")
+    except Exception:  # noqa: BLE001, S110 — coleta nunca derruba a resolucao
+        pass
+
+
 def _salvar_debug(png: bytes, sufixo: str = "") -> None:
     """Salva o PNG em debug_screenshots/ para inspeção visual do que foi enviado ao Gemini."""
     global _debug_counter
@@ -3452,6 +3497,9 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
 
         if not ok:
             print(f"    [captcha] Iteração {rnd}: solver não resolveu. Próxima tentativa...")
+            # Inerte sem `CAPTCHA_DEBUG_AMOSTRAS_DIR`. Aqui o solver já
+            # desistiu, então não há orçamento a proteger.
+            _guardar_amostra(page, tipo)
             continue
 
         # Os solvers já fazem _wait_for_resolve (polling) antes de retornar True,

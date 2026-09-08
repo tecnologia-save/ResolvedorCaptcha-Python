@@ -516,3 +516,66 @@ def test_a_bola_nunca_alcanca_o_segundo_provedor():
     assert par.default <= len(solver.GEMINI_MODELS), (
         "a bola passou a alcancar o segundo provedor, onde ele fez 0/3")
     assert "rodizio=rnd - 1" in fonte
+
+
+# ── Cadeia esgotada: a cota do Gemini deixa de matar o captcha ──────────────
+#
+# O ponto de entrada por rodizio so cobre "o Gemini respondeu e nao fechou".
+# Nao cobria o caso que mais doi: chave com cota estourada. Um 429 na PRIMEIRA
+# rodada derruba a cadeia antes de qualquer rodizio, e o desafio morre sem
+# nenhum modelo ter olhado a imagem — indistinguivel, no desfecho, de "o captcha
+# era dificil".
+
+def test_cota_estourada_cai_no_segundo_provedor(monkeypatch):
+    chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
+    cliente, _ = _cliente({m: RuntimeError("429 RESOURCE_EXHAUSTED")
+                           for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    assert solver._gemini_call([], {}, "k", "grade") == {"ok": "astra"}
+    assert chamadas["n"] == 1
+
+
+def test_pool_indisponivel_tambem_cai_no_segundo_provedor(monkeypatch):
+    """503 e problema do Google; o outro provedor nao o compartilha."""
+    chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
+    cliente, _ = _cliente({m: RuntimeError("503 UNAVAILABLE")
+                           for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    assert solver._gemini_call([], {}, "k", "grade") == {"ok": "astra"}
+    assert chamadas["n"] == 1
+
+
+def test_orcamento_esgotado_NAO_chama_o_segundo_provedor(monkeypatch):
+    """Aqui o problema e o relogio, e ele tambem nao resolve isso.
+
+    Chamar so gastaria mais tempo com o screenshot ainda mais velho.
+    """
+    chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
+    cliente, _ = _cliente({m: RuntimeError("503 UNAVAILABLE")
+                           for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    esgotada = solver.PoliticaLatencia(timeout_ms=1000,
+                                       fim=solver.time.monotonic() - 1)
+    with pytest.raises(RuntimeError):
+        solver._gemini_call([], {}, "k", "grade", politica=esgotada)
+    assert chamadas["n"] == 0
+
+
+def test_sem_o_segundo_provedor_a_cadeia_esgotada_ainda_levanta(monkeypatch):
+    """Quem nao o configurou continua com o comportamento de sempre."""
+    _sem_openai(monkeypatch)
+    cliente, _ = _cliente({m: RuntimeError("429 RESOURCE_EXHAUSTED")
+                           for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    with pytest.raises(RuntimeError):
+        solver._gemini_call([], {}, "k", "grade")
+
+
+def test_se_o_segundo_provedor_tambem_cair_o_erro_e_do_gemini(monkeypatch):
+    """A mensagem tem de apontar a causa raiz, nao o ultimo tropeco."""
+    _com_openai(monkeypatch, explode=RuntimeError("openai fora do ar"))
+    cliente, _ = _cliente({m: RuntimeError("429 RESOURCE_EXHAUSTED")
+                           for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    with pytest.raises(RuntimeError, match="falhou em todos os modelos"):
+        solver._gemini_call([], {}, "k", "grade")

@@ -1227,6 +1227,29 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         _penalizar(model, _diagnostico_erro(last_exc, model))
         if mi < len(ativos) - 1:
             print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
+    # CADEIA ESGOTADA: o segundo provedor e a ultima chance antes de desistir.
+    #
+    # O outro ponto de entrada dele (rodizio esgotado) so serve quando o Gemini
+    # RESPONDE e nao fecha. Nao cobre o caso que mais dói: a chave do Gemini com
+    # a cota estourada. Um 429 na PRIMEIRA rodada derruba a cadeia inteira antes
+    # de qualquer rodizio, e o desafio morre sem nenhum modelo ter olhado a
+    # imagem — indistinguivel, no log e no desfecho, de "o captcha era dificil".
+    #
+    # Vale para qualquer motivo de esgotamento, e nao so cota: pool
+    # indisponivel, chave invalida, requisicao recusada. O que todos tem em
+    # comum e que sao problemas DO GOOGLE ou da nossa integracao com ele — e o
+    # segundo provedor nao compartilha nenhum dos dois.
+    #
+    # NAO entra se o orcamento de tempo acabou: ai o problema e o relogio, que
+    # ele tambem nao resolve, e a chamada so chegaria com o screenshot mais
+    # velho ainda.
+    if _astra_configurado() and not politica.esgotado:
+        try:
+            return _astra_call(contents, schema, tag, politica)
+        except Exception as e:  # noqa: BLE001
+            print(f"    [captcha/{tag}] segundo provedor também falhou | "
+                  f"{_diagnostico_erro(e)}")
+
     # A mensagem desta excecao tambem e log: quem a captura acima imprime.
     raise RuntimeError(
         f"Gemini {tag}: falhou em todos os modelos ({_diagnostico_erro(last_exc)})")

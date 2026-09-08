@@ -2154,8 +2154,41 @@ def _click_grid_positions(page, positions: list[dict], bbox: dict) -> None:
 # Submit com 5 estratégias em cascata
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Quantas vezes NOS submetemos um desafio neste processo.
+#
+# Existe para responder uma pergunta que o log nao respondia: quando o desafio
+# some, fomos nos ou foi outra pessoa? Os resolvedores checam
+# `_challenge_visible` no inicio de cada rodada e, se o desafio sumiu, devolvem
+# True — "sumiu" e "resolvi" viravam a MESMA linha. Numa run acompanhada por
+# alguem, isso torna todo sucesso ambiguo: em 08/09/2026 o Jean resolveu um
+# captcha a mao e o log registrou "Captcha resolvido na iteracao 1!", e eu li
+# como resolucao automatica.
+_SUBMISSOES = 0
+
+
+def _sumiu(tag: str, marca: int, detalhe: str = "") -> bool:
+    """Loga o desaparecimento do desafio dizendo SE foi obra nossa.
+
+    `marca` e o valor de `_SUBMISSOES` na entrada do resolvedor. Se ele nao
+    mudou, nao houve submissao nossa nesta chamada — entao o desafio sumiu por
+    outro motivo: alguem resolveu na tela, ou ele expirou.
+
+    Devolve True porque o desfecho FUNCIONAL e o mesmo dos dois lados (nao ha
+    mais desafio); o que muda e o que o log afirma.
+    """
+    onde = f" {detalhe}" if detalhe else ""
+    if _SUBMISSOES == marca:
+        print(f"    [captcha/{tag}] Desafio sumiu{onde} SEM submissão nossa — "
+              "resolvido fora da automação (pessoa na tela, ou expirou).")
+    else:
+        print(f"    [captcha/{tag}] Desafio sumiu{onde} — resolvido!")
+    return True
+
+
 def _submit_captcha(page) -> bool:
     """Clica no botão Verificar — 5 estratégias em cascata."""
+    global _SUBMISSOES
+    _SUBMISSOES += 1
     page.wait_for_timeout(300)
     print("    [captcha] Submetendo desafio...")
 
@@ -2708,10 +2741,10 @@ def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3,
       3. Aguarda a carta-alvo virar (detecção visual via PIL) e clica por coordenada.
       4. Submete.
     """
+    marca_submissoes = _SUBMISSOES
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
-            print("    [captcha/cartao] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("cartao", marca_submissoes)
 
         print(f"    [captcha/cartao] Rodada {rnd}/{max_rounds}...")
 
@@ -2752,16 +2785,15 @@ def _solve_cartao_animal(page, api_key: str, max_rounds: int = 3,
 def _solve_grade(page, api_key: str, max_rounds: int = 5,
                  politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha de grade 3x3."""
+    marca_submissoes = _SUBMISSOES
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
-            print("    [captcha/grade] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("grade", marca_submissoes)
 
         print(f"    [captcha/grade] Rodada {rnd}/{max_rounds} — aguardando tiles carregarem...")
         tiles_ok = _wait_for_tiles(page)
         if not tiles_ok and not _challenge_visible(page):
-            print("    [captcha/grade] Desafio sumiu enquanto aguardava tiles — resolvido!")
-            return True
+            return _sumiu("grade", marca_submissoes, "enquanto aguardava tiles")
 
         ref_img = _get_reference_image_bytes(page)
 
@@ -2772,8 +2804,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
             # Verifica ANTES do screenshot: o challenge pode ter sumido
             # entre o wait_for_tiles e agora (race condition pós-submit)
             if not _challenge_visible(page):
-                print("    [captcha/grade] Desafio sumiu antes do screenshot — resolvido!")
-                return True
+                return _sumiu("grade", marca_submissoes, "antes do screenshot")
 
             iframe_loc = _get_challenge_element_locator(page)
             try:
@@ -2790,8 +2821,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                 print(f"    [captcha/grade] Screenshot falhou (tentativa {attempt}): {type(e).__name__}")
                 # Se o iframe sumiu é porque o captcha foi resolvido
                 if not _challenge_visible(page):
-                    print("    [captcha/grade] Desafio sumiu após screenshot falhar — resolvido!")
-                    return True
+                    return _sumiu("grade", marca_submissoes, "após screenshot falhar")
                 time.sleep(1)
                 continue
 
@@ -2852,17 +2882,16 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
       4. Envia AMBAS as imagens ao Gemini com _PROMPT_GRADE_FUSED especializado.
       5. Clica nos tiles usando a bbox do recorte (coordenadas precisas de página).
     """
+    marca_submissoes = _SUBMISSOES
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
-            print("    [captcha/grade_fused] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("grade_fused", marca_submissoes)
 
         print(f"    [captcha/grade_fused] Rodada {rnd}/{max_rounds}...")
         time.sleep(0.5)
 
         if not _challenge_visible(page):
-            print("    [captcha/grade_fused] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("grade_fused", marca_submissoes)
 
         # ── 1. Screenshot completo do iframe ─────────────────────────────────
         iframe_loc = _get_challenge_element_locator(page)
@@ -2936,8 +2965,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
 
         for attempt in range(1, MAX_GEMINI_TRIES + 1):
             if not _challenge_visible(page):
-                print("    [captcha/grade_fused] Desafio sumiu antes do Gemini — resolvido!")
-                return True
+                return _sumiu("grade_fused", marca_submissoes, "antes do Gemini")
 
             try:
                 if tiles_png:
@@ -3011,10 +3039,10 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
 def _solve_imagem(page, api_key: str, max_rounds: int = 5,
                   politica: PoliticaLatencia | None = None) -> bool:
     """Resolve captcha de imagem completa com grid 20x20."""
+    marca_submissoes = _SUBMISSOES
     for rnd in range(1, max_rounds + 1):
         if not _challenge_visible(page):
-            print("    [captcha/imagem] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("imagem", marca_submissoes)
 
         print(f"    [captcha/imagem] Rodada {rnd}/{max_rounds}...")
 
@@ -3340,6 +3368,7 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
     tempo que os timeouts por chamada permitirem, e o desafio expira na tela
     antes disso — ja observado, com o portal fechando o captcha no meio.
     """
+    marca_submissoes = _SUBMISSOES
     if not _PIL:
         print("    [captcha/bola] Pillow indisponível — não é possível resolver.")
         return False
@@ -3353,8 +3382,7 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
             print(f"    [captcha/bola] Orçamento total esgotado na rodada {rnd} — parando.")
             return False
         if not _challenge_visible(page):
-            print("    [captcha/bola] Desafio sumiu — resolvido!")
-            return True
+            return _sumiu("bola", marca_submissoes)
 
         print(f"    [captcha/bola] Rodada {rnd}/{max_rounds} — capturando animação...")
         enunciado_origem = _prompt_do_desafio(page)
@@ -3363,8 +3391,7 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
             print("    [captcha/bola] Poucos quadros capturados — retentando.")
             continue
         if not _challenge_visible(page):
-            print("    [captcha/bola] Desafio sumiu durante a captura — resolvido!")
-            return True
+            return _sumiu("bola", marca_submissoes, "durante a captura")
 
         rodada = _maior_trecho_sem_transicao(frames)
         selecionados = _amostrar_frames_distintos(rodada, BOLA_N_ALTA + BOLA_N_BAIXA)

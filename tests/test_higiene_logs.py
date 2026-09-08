@@ -273,3 +273,55 @@ def test_falha_na_coleta_nao_derruba_a_resolucao(monkeypatch, tmp_path):
     monkeypatch.setattr(solver, "_capturar_desafio", explode)
     solver._AMOSTRAS_GUARDADAS.clear()
     solver._guardar_amostra(object(), "grade_fused")   # nao pode levantar
+
+
+# ── "Sumiu" e "resolvi" nao podem ser a mesma frase ─────────────────────────
+#
+# Em 08/09/2026 o Jean resolveu um captcha A MAO e o log registrou
+# "Captcha resolvido na iteracao 1!". Eu li como resolucao automatica e
+# reportei a ele como o primeiro sucesso ponta a ponta. Nao era.
+#
+# Os resolvedores checam `_challenge_visible` no inicio de cada rodada e, se o
+# desafio sumiu, devolvem True — o desfecho FUNCIONAL e o mesmo, mas a causa
+# nao. Numa run acompanhada por alguem, isso torna todo sucesso ambiguo.
+
+def test_sem_submissao_nossa_o_log_diz_isso(capsys):
+    marca = solver._SUBMISSOES
+    assert solver._sumiu("grade", marca) is True
+    saida = capsys.readouterr().out
+    assert "SEM submissão nossa" in saida
+    assert "fora da automação" in saida
+
+
+def test_com_submissao_nossa_o_log_afirma_resolucao(capsys, monkeypatch):
+    marca = solver._SUBMISSOES
+    monkeypatch.setattr(solver, "_SUBMISSOES", marca + 1)
+    assert solver._sumiu("grade", marca) is True
+    saida = capsys.readouterr().out
+    assert "resolvido!" in saida
+    assert "SEM submissão nossa" not in saida
+
+
+def test_o_desfecho_funcional_nao_muda(capsys):
+    """Nos dois casos nao ha mais desafio: quem chamou segue igual."""
+    assert solver._sumiu("bola", solver._SUBMISSOES) is True
+    assert solver._sumiu("bola", solver._SUBMISSOES - 1) is True
+
+
+def test_submeter_conta(monkeypatch):
+    """Sem o contador subir, todo desaparecimento pareceria alheio."""
+    monkeypatch.setattr(solver, "_get_challenge_frame", lambda _p: None)
+
+    class Pagina:
+        def wait_for_timeout(self, _ms):
+            pass
+
+        def __getattr__(self, _n):
+            raise RuntimeError("sem navegador")
+
+    antes = solver._SUBMISSOES
+    try:
+        solver._submit_captcha(Pagina())
+    except Exception:
+        pass
+    assert solver._SUBMISSOES == antes + 1, "a submissao nao foi contabilizada"

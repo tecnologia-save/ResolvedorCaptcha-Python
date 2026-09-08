@@ -506,6 +506,24 @@ def _guardar_amostra(page, tipo: str, instrucao: str = "") -> None:
     try:
         os.makedirs(destino, exist_ok=True)
         marca = f"{time.strftime('%Y%m%d-%H%M%S')}-{tipo}"
+
+        # DESAFIO ANIMADO PRECISA DE SEQUENCIA, nao de um retrato.
+        #
+        # Um screenshot so nao permite testar nada de um formato cuja resposta
+        # existe no MOVIMENTO — e formato animado novo e exatamente o que a
+        # coleta deveria destravar. Em 08/09/2026 apareceu "clique na flor em
+        # que a abelha nunca pousa", falhou, e a amostra guardada era uma foto:
+        # inutil para reproduzir o problema fora da run.
+        #
+        # Os quadros saem com o mesmo mecanismo da resolucao — clip e
+        # `animations="allow"` —, entao o que fica no disco e o que o resolvedor
+        # teria visto, e nao uma aproximacao.
+        if tipo == TIPO_BOLA:
+            quadros, _caixa = _capturar_frames_bola(page)
+            for i, q in enumerate(quadros):
+                with open(os.path.join(destino, f"{marca}_f{i:02d}.png"), "wb") as f:
+                    f.write(q)
+            print(f"    [captcha] Sequência guardada: {len(quadros)} quadros.")
         png, _caixa = _capturar_desafio(page)
         if png:
             with open(os.path.join(destino, f"{marca}.png"), "wb") as f:

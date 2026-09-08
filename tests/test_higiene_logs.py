@@ -244,11 +244,45 @@ def test_guarda_UMA_por_tipo_por_processo(monkeypatch, tmp_path):
 def test_tipos_diferentes_geram_amostras_diferentes(monkeypatch, tmp_path):
     monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
     monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_capturar_frames_bola", lambda _p: ([], None))
     monkeypatch.setattr(solver, "_extrair_instrucao", lambda _p: "x")
     solver._AMOSTRAS_GUARDADAS.clear()
     solver._guardar_amostra(object(), "grade_fused")
     solver._guardar_amostra(object(), "bola_em_movimento")
     assert len(list(tmp_path.glob("*.png"))) == 2
+
+
+# ── Desafio ANIMADO precisa de sequencia, nao de retrato ───────────────────
+#
+# Um screenshot so nao permite testar nada de um formato cuja resposta existe no
+# MOVIMENTO. Em 08/09/2026 apareceu "clique na flor em que a abelha nunca
+# pousa", falhou, e a amostra guardada era uma foto — inutil para reproduzir o
+# problema fora da run, que e justamente o que a coleta deveria destravar.
+
+def test_animado_guarda_a_SEQUENCIA(monkeypatch, tmp_path):
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_capturar_frames_bola",
+                        lambda _p: ([b"q%d" % i for i in range(6)], None))
+    monkeypatch.setattr(solver, "_extrair_instrucao", lambda _p: "abelha")
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), solver.TIPO_BOLA)
+    quadros = sorted(tmp_path.glob("*_f??.png"))
+    assert len(quadros) == 6, [q.name for q in quadros]
+
+
+def test_estatico_NAO_paga_a_sequencia(monkeypatch, tmp_path):
+    """Formato parado nao ganha nada com 14 quadros iguais."""
+    monkeypatch.setenv("CAPTCHA_DEBUG_AMOSTRAS_DIR", str(tmp_path))
+    chamou = {"n": 0}
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"png", None))
+    monkeypatch.setattr(solver, "_capturar_frames_bola",
+                        lambda _p: (chamou.__setitem__("n", 1), None))
+    monkeypatch.setattr(solver, "_extrair_instrucao", lambda _p: "x")
+    solver._AMOSTRAS_GUARDADAS.clear()
+    solver._guardar_amostra(object(), "grade_fused")
+    assert chamou["n"] == 0
+    assert list(tmp_path.glob("*_f??.png")) == []
 
 
 def test_o_enunciado_vai_junto(monkeypatch, tmp_path):

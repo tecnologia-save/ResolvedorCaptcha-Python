@@ -36,9 +36,16 @@ def _nome(requisito):
 
 
 def test_distribuicao_declara_dependencias_de_runtime():
-    """Sem isto o pacote instala 'limpo' e o solver perde genai/Pillow."""
+    """Sem isto o pacote instala 'limpo' e o solver perde genai/Pillow.
+
+    `openai` entrou em 1.2.0 como SEGUNDO PROVEDOR — a carta de acuracia que
+    responde quando o rodizio ja ouviu todos os modelos do Gemini e nenhum
+    fechou. Sem OPENAI_API_KEY no ambiente ele nunca e chamado, mas o import
+    precisa existir: ImportError no meio de uma varredura custa a run inteira,
+    nao so a chamada.
+    """
     deps = PYPROJECT["project"]["dependencies"]
-    assert {_nome(d) for d in deps} == {"google-genai", "pillow"}
+    assert {_nome(d) for d in deps} == {"google-genai", "openai", "pillow"}
 
 
 def test_dependencias_batem_com_requirements_txt():

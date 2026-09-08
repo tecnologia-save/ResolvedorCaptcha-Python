@@ -4099,6 +4099,26 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             ok = _solve_cartao_animal(page, api_key, politica=politica)
         elif tipo == TIPO_BOLA:
             ok = _solve_bola(page, api_key, politica=politica)
+            if not ok:
+                # NAO repetir o resolvedor de sequencia no laco externo.
+                #
+                # Ele JA repete por dentro (2 rodadas), e cada rodada captura 14
+                # ou 30 quadros. Multiplicar isso pelas 6 iteracoes daqui da 264
+                # screenshots e 132 s so de captura — mais que o orcamento
+                # inteiro do login (120 s). Medido em 08/09/2026, e e o que o
+                # Jean via como "tira 200 prints e a chamada do Gemini falha":
+                # a iteracao 2 nascia com orcamento zerado, entao
+                # `timeout_efetivo` ia a zero e TODA chamada estourava na hora.
+                # Parecia o modelo falhando; era o relogio.
+                #
+                # Os outros resolvedores custam um screenshot por rodada, e para
+                # eles repetir aqui ainda faz sentido: a tela pode ter mudado.
+                print("    [captcha] Sequência não resolveu — o resolvedor já "
+                      "repetiu internamente; não reiniciar o ciclo.")
+                _guardar_amostra(page, tipo)
+                _diagnosticar_desafio(page, api_key, tipo,
+                                      _extrair_instrucao(page))
+                return False
         else:
             ok = _solve_imagem(page, api_key, politica=politica)
 

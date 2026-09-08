@@ -421,14 +421,29 @@ def test_falha_na_triagem_nao_derruba_nada(monkeypatch, tmp_path):
     solver._diagnosticar_desafio(object(), "chave", "grade")   # nao pode levantar
 
 
-def test_a_triagem_nao_roda_dentro_do_laco_de_rodadas():
-    """Ali ainda ha orcamento a proteger, e um desafio que pode ser resolvido
-    nao precisa de autopsia."""
+def test_a_triagem_so_roda_onde_a_resolucao_ACABOU():
+    """Autopsia so faz sentido depois do obito.
+
+    O criterio nao e "fora do laco" — e "num ponto de saida". A sequencia
+    encerra DENTRO do laco (ela ja repetiu por dentro; reiniciar aqui daria 264
+    screenshots), e ali a resolucao acabou tanto quanto no fim da funcao.
+    
+    O que continua proibido e triagem antes de um `continue`: ali o desafio
+    ainda pode ser resolvido, e ha orcamento a proteger.
+    """
     import inspect
     fonte = inspect.getsource(solver.solve_hcaptcha)
-    pos_chamada = fonte.index("_diagnosticar_desafio(")
-    pos_limite = fonte.index("Limite de {max_rounds} iterações atingido")
-    assert pos_chamada > pos_limite, "a triagem entrou no meio do laço"
+    linhas = fonte.split(chr(10))
+    for i, linha in enumerate(linhas):
+        if "_diagnosticar_desafio(" not in linha:
+            continue
+        # A partir daqui, o proximo controle de fluxo tem de ser um `return`.
+        seguintes = chr(10).join(linhas[i:i + 8])
+        assert "return" in seguintes, (
+            f"triagem na linha {i} do fonte nao e seguida de saida")
+        antes_do_return = seguintes[:seguintes.index("return")]
+        assert "continue" not in antes_do_return, (
+            "triagem antes de um `continue`: o desafio ainda podia ser resolvido")
 
 
 # ── A ausencia do segundo provedor nao pode ser SILENCIOSA ─────────────────

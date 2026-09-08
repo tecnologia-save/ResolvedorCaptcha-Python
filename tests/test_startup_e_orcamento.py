@@ -568,3 +568,42 @@ def test_o_teto_duro_e_medido_do_inicio():
     import inspect
     fonte = inspect.getsource(solver.solve_hcaptcha)
     assert "inicio_orcamento + deadline_max_s" in fonte
+
+
+# ── O laco externo NAO repete o resolvedor de sequencia ────────────────────
+#
+# Ele ja repete por dentro (2 rodadas), e cada rodada captura 14 ou 30 quadros.
+# Multiplicar pelas 6 iteracoes de `solve_hcaptcha` dava 264 screenshots e 132 s
+# so de captura — mais que o orcamento inteiro do login (120 s).
+#
+# O efeito visivel era enganoso: a iteracao 2 nascia com orcamento zerado, entao
+# `timeout_efetivo` ia a zero e TODA chamada estourava na hora. Parecia o modelo
+# falhando; era o relogio.
+
+def test_a_sequencia_nao_reinicia_o_ciclo():
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    trecho = fonte[fonte.index("_solve_bola(page"):]
+    trecho = trecho[:trecho.index("else:")] if "else:" in trecho else trecho[:1200]
+    assert "return False" in trecho, (
+        "o resolvedor de sequencia voltou a reiniciar no laco externo")
+
+
+def test_a_captura_da_sequencia_cabe_no_orcamento_do_login():
+    """1 x (14 + 30) quadros, e nao 6 x."""
+    curta = solver.BOLA_FRAMES * solver.BOLA_INTERVALO_S
+    longa = solver.BOLA_FRAMES_LONGO * solver.BOLA_INTERVALO_LONGO_S
+    DEADLINE_LOGIN_S = 120.0     # servicos-rf-login, DEADLINE_CAPTCHA_LOGIN_S
+    assert curta + longa < DEADLINE_LOGIN_S / 2, (
+        "a captura sozinha come metade do orcamento do login")
+
+
+def test_os_outros_resolvedores_seguem_repetindo():
+    """Eles custam UM screenshot por rodada, e a tela pode ter mudado."""
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    for chamada in ("_solve_grade(page", "_solve_imagem(page"):
+        pos = fonte.index(chamada)
+        seguinte = fonte[pos:pos + 200]
+        assert "return False" not in seguinte, (
+            f"{chamada} passou a encerrar o ciclo — nao era a intencao")

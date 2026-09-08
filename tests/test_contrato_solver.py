@@ -338,13 +338,20 @@ def test_classificador_esta_na_api_publica():
 # nao depende de ler nada: movimento e a propriedade que DEFINE este desafio.
 
 def test_limiar_de_movimento_separa_ruido_de_bola():
-    """Medido: ruido de compressao 0,011%; bola em movimento 0,90%-2,12%.
+    """Medido: ruido de compressao 0,011%; animacao mais fraca 0,28% (abelha).
 
-    O limiar tem de ficar entre os dois, e com folga dos dois lados — 27x acima
-    do ruido e 3x abaixo do sinal mais fraco ja observado.
+    O limiar tem de ficar entre os dois, e com folga dos dois lados — 10x acima
+    do ruido e ao menos 2x abaixo do sinal mais fraco ja observado.
+
+    O sinal fraco NAO e a bola (0,90%-2,12%). E a abelha, medida em 08/09/2026
+    em 0,28%-0,42%. Enquanto a constante valia 0,3%, a abelha era classificada
+    "estatico" e ia para o resolvedor de quadro unico, que nao tem como
+    responder qual flor ela nunca visita. Se alguem subir este limiar de volta
+    para acomodar a bola, quebra a abelha de novo — por isso o teto aqui e
+    derivado da abelha.
     """
     RUIDO_MEDIDO = 0.00011
-    BOLA_MAIS_FRACA_MEDIDA = 0.0090
+    BOLA_MAIS_FRACA_MEDIDA = 0.0028
     assert RUIDO_MEDIDO < solver.BOLA_MOVIMENTO_MIN_FRACAO < BOLA_MAIS_FRACA_MEDIDA
     assert solver.BOLA_MOVIMENTO_MIN_FRACAO >= RUIDO_MEDIDO * 10
     assert solver.BOLA_MOVIMENTO_MIN_FRACAO <= BOLA_MAIS_FRACA_MEDIDA / 2
@@ -590,6 +597,25 @@ def test_sem_enunciado_nao_afirma_clique_unico():
     """Sem texto, a decisao volta para a geometria — nao se inventa mecanica."""
     assert solver._pede_um_clique_so("") is False
     assert solver._pede_um_clique_so(None) is False
+
+
+def test_clique_unico_nao_clica_lista_de_candidatos():
+    """Enunciado de resposta unica com varios pontos -> retenta, nao clica.
+
+    Medido em 08/09/2026: "clique na flor em que a abelha nunca pousa" e
+    "por favor, clique na figura diferente" voltaram do modelo com 4 pontos
+    cada. Clicar os quatro erra por construcao — o enunciado EXCLUI tres deles.
+    Pegar o primeiro tambem nao serve: a lista e sintoma de o modelo ter
+    enumerado candidatos em vez de escolher, entao nenhum item dela vale mais
+    que os outros.
+    """
+    import inspect
+    fonte = inspect.getsource(solver._solve_imagem)
+    pos_guarda = fonte.index("_pede_um_clique_so(instrucao)")
+    pos_clique = fonte.index("_click_grid_positions(page, positions")
+    assert pos_guarda < pos_clique, (
+        "a guarda de clique unico tem de rodar ANTES de clicar, senao "
+        "e so um log depois do estrago")
 
 
 def test_a_decisao_por_enunciado_vem_antes_da_proporcao():

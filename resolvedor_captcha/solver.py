@@ -1649,13 +1649,22 @@ def _geometria_estavel(page, caixa_origem: dict | None) -> bool:
 # Fração de pixels que precisa mudar entre dois quadros para a área contar como
 # ANIMADA. Medido: área parada dá ~51 px de diferença numa região de 651x714
 # (0,011% — ruído de compressão JPEG do próprio screenshot), e a bola em
-# movimento dá ~5.000 px na mesma região (1,1%). Três ordens de grandeza entre
-# os dois casos, então 0,3% fica longe de ambos e não é número escolhido a dedo.
+# movimento dá ~5.000 px na mesma região (1,1%).
+#
+# 0,3% cobria a bola e REPROVAVA a abelha. Em 08/09/2026, na run das 16:51, a
+# sonda mediu 0,28% no desafio da abelha e imprimiu "estático" — abaixo do
+# limiar por dois centésimos. O desafio foi para o resolvedor de quadro único,
+# que não tem como responder "em qual flor ela nunca pousa": essa informação
+# não existe num quadro. A mesma run mediu 0,00% numa tela genuinamente parada.
+#
+# Ou seja, os dois casos continuam separados por ordens de grandeza — mas o
+# sinal fraco é a abelha (0,28%–0,42%), não a bola (0,90%+). O limiar foi para
+# 0,12%: 10x acima do ruído medido e menos da metade do sinal mais fraco.
 #
 # FRAÇÃO, e não contagem absoluta: a área do desafio varia de tamanho (651x714 e
 # 520x402 já foram vistos), e um limiar em pixels viraria sensibilidade
 # diferente para cada tamanho.
-BOLA_MOVIMENTO_MIN_FRACAO = 0.003
+BOLA_MOVIMENTO_MIN_FRACAO = 0.0012
 BOLA_SONDA_INTERVALO_S = 0.45
 # Quantas amostras a sonda tira. NAO e detalhe de performance — e o que decide
 # se ela enxerga o movimento.
@@ -3568,6 +3577,22 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             # Clique por pixel sobre `area_bbox`, medida antes do modelo.
             if not _geometria_estavel(page, _caixa_ident):
                 print(f"    [captcha/imagem] {MSG_DESCARTE}")
+                continue
+            # O enunciado manda no NUMERO de cliques, nao o modelo.
+            #
+            # Medido em 08/09/2026: "clique na flor em que a abelha nunca
+            # pousa" e "clique na figura diferente" — os dois de resposta
+            # unica — vieram com 4 pontos cada. Clicar os quatro erra sempre:
+            # tres deles sao exatamente o que o enunciado exclui. O modelo
+            # listou os candidatos em vez de escolher, e o primeiro da lista
+            # nao e melhor que os outros, entao a lista inteira e suspeita.
+            #
+            # Retentar custa uma rodada; clicar errado queima a tentativa E
+            # troca o desafio, perdendo tambem o trabalho ja feito.
+            if _pede_um_clique_so(instrucao) and len(positions) > 1:
+                print(f"    [captcha/imagem] Enunciado pede UM clique e vieram "
+                      f"{len(positions)} pontos — o modelo listou candidatos em "
+                      f"vez de escolher. Retentando...")
                 continue
             _click_grid_positions(page, positions, area_bbox)
         elif action == "type":

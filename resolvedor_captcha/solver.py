@@ -1601,24 +1601,28 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
             }""")
             if bounds:
                 ratio = bounds["width"] / bounds["height"]
+                # A ÁREA SE MEXE? Esta pergunta vem antes de qualquer geometria,
+                # e vale para QUALQUER proporção.
+                #
+                # Movimento é a única propriedade que separa "a resposta está
+                # neste quadro" de "a resposta está na sequência", e ela não
+                # depende de ler o enunciado, de acertar palavra-chave nem de
+                # idioma. Enquanto a sonda vivia só dentro da faixa 0,75–1,40,
+                # ela pegava a bola (quadrada) e perdia formatos mais largos: o
+                # "clique na flor em que a abelha nunca pousa" apareceu em
+                # 08/09/2026 numa área de razão ~1,48 e teria ido para um
+                # resolvedor que olha UM quadro.
+                #
+                # Custa ~0,5 s e dois screenshots, só quando não há tiles — ou
+                # seja, só no caminho ambíguo, onde a geometria decidiria
+                # sozinha e podia decidir errado.
+                if _area_do_desafio_se_move(page):
+                    print(f"    [captcha] Tipo: {TIPO_BOLA} (área animada, "
+                          f"{bounds['width']:.0f}x{bounds['height']:.0f}px "
+                          f"ratio={ratio:.2f}).")
+                    return TIPO_BOLA
                 # Grade 3x3 é aproximadamente quadrada (0.75–1.4); imagem livre é mais retangular
                 if 0.75 <= ratio <= 1.4:
-                    # ANTES de chamar de grade_fused: a área se MEXE?
-                    #
-                    # Este é o ponto em que a bola era engolida. Ela é uma imagem
-                    # única e quadrada, então cai exatamente aqui, e seguia para
-                    # um resolvedor que olha UM quadro. O desvio por palavra-chave
-                    # acima só a pega quando o texto da instrução é legível no
-                    # DOM; quando não é, a geometria decide sozinha e decide
-                    # errado.
-                    #
-                    # Movimento é a propriedade que DEFINE este desafio, e não
-                    # depende de ler nem de traduzir nada.
-                    if _area_do_desafio_se_move(page):
-                        print(f"    [captcha] Tipo: {TIPO_BOLA} "
-                              f"(área animada, {bounds['width']:.0f}x"
-                              f"{bounds['height']:.0f}px ratio={ratio:.2f}).")
-                        return TIPO_BOLA
                     # O ENUNCIADO entra no log AQUI, e não só nos tipos
                     # reconhecidos por palavra-chave.
                     #
@@ -3287,8 +3291,26 @@ _SCHEMA_BOLA = {
     "required": ["animais", "tocados", "resposta", "col", "row", "confidence"],
 }
 
-_PROMPT_BOLA = """\
-Você está resolvendo um captcha hCaptcha do tipo "Clique no animal que a bola nunca toca".
+# O prompt NAO nomeia bola nem animal — e essa a diferenca entre um resolvedor
+# e um catalogo de formatos.
+#
+# A versao anterior citava "bola" e "animal" 14 vezes e nunca lia o enunciado:
+# todo o conhecimento do desafio estava aqui, escrito a mao. Funcionava para
+# "clique no animal que a bola nunca toca" e falhava em "clique na flor em que a
+# abelha nunca pousa" — mesma mecanica, substantivos outros. Cada variante nova
+# custava uma sessao de desenvolvimento.
+#
+# O `_solve_imagem` ja tinha resolvido isso do outro lado: repassa o enunciado
+# LITERAL e pergunta a celula, sem saber o que e o desafio. Foi por isso que ele
+# resolveu "quebra o padrao" e "figura diferente" sem ninguem mapear nada. Aqui
+# a mesma ideia, para desafios que se movem.
+#
+# O que fica: metodo de eliminacao, celula da grade, exigencia de eliminacao
+# FECHADA. Isso e mecanica, nao vocabulario.
+_PROMPT_BOLA = """Você está resolvendo um captcha hCaptcha. A instrução exata, como aparece na
+tela, é:
+
+    "{instrucao}"
 
 === O QUE VOCÊ RECEBEU ===
 {cabecalho}
@@ -3298,35 +3320,43 @@ O PRIMEIRO quadro tem uma GRADE vermelha sobreposta, com rótulos "coluna,linha"
 NÃO têm grade — são a mesma cena, nos instantes seguintes.
 
 === COMO ESTE DESAFIO FUNCIONA ===
-Há vários animais fixos, espalhados pela área. Há UMA bola que se MOVE, quadro
-a quadro, passando por cima de alguns animais. A bola pode ser de futebol
-(preta e branca), de vôlei (azul e amarela) ou outra — não assuma a cor.
+Há vários ALVOS fixos, espalhados pela área — podem ser animais, flores,
+objetos, símbolos, qualquer coisa. E há UM elemento que se MOVE de quadro a
+quadro, passando por cima de alguns alvos.
 
-A resposta é o único animal que a bola NUNCA sobrepõe em NENHUM quadro.
+A resposta é o único alvo que satisfaz a condição do enunciado acima. Na forma
+mais comum, é o alvo que o elemento móvel NUNCA alcança em NENHUM quadro — mas
+LEIA A INSTRUÇÃO: é ela que define a condição, não esta descrição.
+
+Não assuma cor, forma ou espécie de nada. O que identifica o elemento móvel é
+que ele MUDA DE POSIÇÃO entre os quadros; os alvos ficam parados.
 
 === MÉTODO OBRIGATÓRIO ===
-1. Liste os animais presentes (são os MESMOS em todos os quadros).
-2. Para CADA quadro, diga sobre qual animal a bola está (ou "nenhum").
-3. Elimine todo animal que apareceu tocado em pelo menos um quadro.
+1. Liste os alvos presentes (são os MESMOS em todos os quadros).
+2. Para CADA quadro, diga sobre qual alvo o elemento móvel está (ou "nenhum").
+3. Elimine todo alvo que a instrução exclui — na forma mais comum, todo alvo
+   alcançado em pelo menos um quadro.
 4. Sobra um: é a resposta.
 
 === REGRAS CRÍTICAS ===
   !! NÃO adivinhe pelo primeiro quadro. A informação só existe na SEQUÊNCIA.
-  !! Um animal parcialmente coberto pela bola CONTA como tocado.
+  !! Um alvo PARCIALMENTE sobreposto conta como alcançado.
   !! Se sobrar mais de um candidato, diga a confiança como "low" — não force
      uma escolha.
-  !! O fundo tem textura animada. Ignore o fundo — só importam animais e bola.
-  !! IGNORE a barra de botões no rodapé: ali não há animal nenhum.
+  !! O fundo pode ter textura animada. Ignore o fundo — só importam os alvos e
+     o elemento que se move.
+  !! IGNORE a barra de botões no rodapé: ali não há alvo nenhum.
 
 === ONDE ELE ESTÁ ===
-`col` e `row` são a CÉLULA DA GRADE em que fica o CENTRO do animal-resposta,
-lida no primeiro quadro. Responda a célula, não pixels.
+`col` e `row` são a CÉLULA DA GRADE em que fica o CENTRO do alvo-resposta, lida
+no primeiro quadro. Responda a célula, não pixels.
 
 === RETORNE ===
-  animais: lista dos animais identificados, em português, minúsculas
-  tocados: lista dos que a bola sobrepôs em algum quadro
-  resposta: o animal que a bola nunca toca (um só, em português, minúsculas)
-  col, row: célula do centro desse animal, na grade do primeiro quadro
+  animais: lista dos ALVOS identificados, em português, minúsculas
+           (o nome do campo é histórico; vale para alvo de qualquer tipo)
+  tocados: lista dos alvos que o elemento móvel alcançou em algum quadro
+  resposta: o alvo que satisfaz o enunciado (um só, em português, minúsculas)
+  col, row: célula do centro desse alvo, na grade do primeiro quadro
   justificativa: uma frase curta
   confidence: "high" | "medium" | "low"
 """
@@ -3451,13 +3481,15 @@ def _preparar_partes_bola(frames: list[bytes], n_alta: int, esc_alta: float,
 
 def _gemini_bola(partes_bin: list[bytes], n_alta: int, api_key: str,
                  politica: PoliticaLatencia | None = None,
-                 rodizio: int = 0) -> dict:
+                 rodizio: int = 0, instrucao: str = "") -> dict:
     cabecalho = (
         f"{min(n_alta, len(partes_bin))} quadros em ALTA resolução (os primeiros) e "
         f"{max(0, len(partes_bin) - n_alta)} em BAIXA resolução (os seguintes), "
         "todos da MESMA animação, em ordem cronológica."
     )
     contents: list = [_PROMPT_BOLA.format(
+        instrucao=(instrucao or "").strip()
+        or "Clique no alvo que o elemento em movimento nunca alcança.",
         cabecalho=cabecalho, cols=GRID_COLS, rows=GRID_ROWS,
         max_col=GRID_COLS - 1, max_row=GRID_ROWS - 1)]
     for png in partes_bin:
@@ -3508,6 +3540,11 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 
         print(f"    [captcha/bola] Rodada {rnd}/{max_rounds} — capturando animação...")
         enunciado_origem = _prompt_do_desafio(page)
+        # O enunciado vai para o modelo LITERAL. E o que faz este resolvedor
+        # servir "a bola nunca toca" e "a abelha nunca pousa" sem saber o que e
+        # bola nem abelha.
+        instrucao = _extrair_instrucao(page)
+        print(f"    [captcha/bola] Instrução: '{_limpar_texto(instrucao)}'")
         frames, caixa = _capturar_frames_bola(page)
         if len(frames) < 5 or not caixa:
             print("    [captcha/bola] Poucos quadros capturados — retentando.")
@@ -3522,7 +3559,7 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 
         try:
             result = _gemini_bola(partes_bin, BOLA_N_ALTA, api_key, politica,
-                                  rodizio=rnd - 1)
+                                  rodizio=rnd - 1, instrucao=instrucao)
         except Exception as e:  # noqa: BLE001
             print(f"    [captcha/bola] Gemini falhou | {_diagnostico_erro(e)}")
             continue

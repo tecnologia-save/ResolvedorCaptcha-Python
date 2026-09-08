@@ -374,3 +374,63 @@ def test_sonda_sem_bounding_box_nao_afirma_movimento():
         def bounding_box(self):
             return None
     assert solver._area_do_desafio_se_move(SemCaixa()) is False
+
+
+# ── Generalizacao: mecanica em vez de vocabulario ───────────────────────────
+#
+# Em 08/09/2026 apareceu "Clique na flor em que a abelha nunca pousa" — MESMA
+# mecanica da bola, substantivos outros. O resolvedor de sequencia citava
+# "bola" e "animal" 14 vezes e nunca lia o enunciado: todo o conhecimento
+# estava no prompt, escrito a mao. Cada variante nova custava um dev.
+#
+# O `_solve_imagem` ja provava o contrario do outro lado: repassa o enunciado
+# LITERAL e pergunta a celula, sem saber o que e o desafio — e por isso resolveu
+# "quebra o padrao" e "figura diferente" sem ninguem mapear nada.
+
+def test_o_prompt_de_sequencia_nao_nomeia_o_desafio():
+    """Se voltar a citar 'bola'/'animal', voltou a ser catalogo de formatos."""
+    prompt = solver._PROMPT_BOLA.lower()
+    # "animais" sobrevive so como nome historico do campo de retorno.
+    corpo = prompt.split("=== retorne ===")[0]
+    assert "bola" not in corpo, "o prompt voltou a nomear o objeto movel"
+    assert "animal" not in corpo, "o prompt voltou a nomear os alvos"
+
+
+def test_o_prompt_de_sequencia_recebe_o_enunciado():
+    """E a instrucao da tela que define a condicao, nao o texto fixo."""
+    assert "{instrucao}" in solver._PROMPT_BOLA
+
+
+def test_gemini_bola_aceita_e_repassa_o_enunciado(monkeypatch):
+    visto = {}
+
+    def falso(contents, schema, api_key, tag, politica=None, rodizio=0):
+        visto["texto"] = contents[0]
+        return {"ok": 1}
+
+    monkeypatch.setattr(solver, "_gemini_call", falso)
+    solver._gemini_bola([], 1, "k", instrucao="clique na flor em que a abelha nunca pousa")
+    assert "abelha nunca pousa" in visto["texto"], (
+        "o enunciado da tela nao chegou ao modelo")
+
+
+def test_o_resolvedor_de_sequencia_le_a_tela():
+    """Sem isto o enunciado nunca sai do DOM, por mais generico que o prompt seja."""
+    import inspect
+    fonte = inspect.getsource(solver._solve_bola)
+    assert "_extrair_instrucao(page)" in fonte
+    assert "instrucao=instrucao" in fonte
+
+
+def test_a_sonda_de_movimento_nao_depende_de_proporcao():
+    """A bola e quadrada; a abelha veio em ~1,48 e teria escapado.
+
+    Movimento e a unica propriedade que separa "a resposta esta neste quadro"
+    de "a resposta esta na sequencia" — e ela nao tem proporcao preferida.
+    """
+    import inspect
+    fonte = inspect.getsource(solver._detect_challenge_type)
+    pos_sonda = fonte.index("_area_do_desafio_se_move(page)")
+    pos_faixa = fonte.index("0.75 <= ratio <= 1.4")
+    assert pos_sonda < pos_faixa, (
+        "a sonda voltou para dentro da faixa de proporcao e perde formatos largos")

@@ -1224,12 +1224,26 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     limite_segundo = (RODIZIO_DO_SEGUNDO_PROVEDOR
                       if rodizio_segundo_provedor is None
                       else rodizio_segundo_provedor)
-    if rodizio >= limite_segundo and ativos and _astra_configurado():
-        try:
-            return _astra_call(contents, schema, tag, politica)
-        except Exception as e:  # noqa: BLE001
-            print(f"    [captcha/{tag}] segundo provedor falhou | "
-                  f"{_diagnostico_erro(e)} — voltando ao Gemini.")
+    if rodizio >= limite_segundo and ativos:
+        # Por que ele NAO foi chamado, quando nao foi.
+        #
+        # Em 08/09/2026 os arquivos de diagnostico mostravam so modelos Gemini,
+        # e nao havia como distinguir tres casos muito diferentes: o astra nao
+        # esta configurado, o astra foi chamado e falhou, ou o rodizio nem
+        # chegou nele. Os tres deixavam o mesmo rastro — nenhum. A pergunta
+        # "cade o astra?" foi feita cinco vezes sem que os arquivos pudessem
+        # responder.
+        if not _astra_configurado():
+            _despejar_erro_para_diagnostico(
+                RuntimeError("OPENAI_API_KEY ausente no processo da run"),
+                f"{tag}-astra-ausente", "astra")
+        else:
+            try:
+                return _astra_call(contents, schema, tag, politica)
+            except Exception as e:  # noqa: BLE001
+                print(f"    [captcha/{tag}] segundo provedor falhou | "
+                      f"{_diagnostico_erro(e)} — voltando ao Gemini.")
+                _despejar_erro_para_diagnostico(e, f"{tag}-astra", "astra")
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
         ativos = ativos[giro:] + ativos[:giro]

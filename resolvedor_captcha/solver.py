@@ -4099,35 +4099,33 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             ok = _solve_cartao_animal(page, api_key, politica=politica)
         elif tipo == TIPO_BOLA:
             ok = _solve_bola(page, api_key, politica=politica)
-            if not ok:
-                # NAO repetir o resolvedor de sequencia no laco externo.
-                #
-                # Ele JA repete por dentro (2 rodadas), e cada rodada captura 14
-                # ou 30 quadros. Multiplicar isso pelas 6 iteracoes daqui da 264
-                # screenshots e 132 s so de captura — mais que o orcamento
-                # inteiro do login (120 s). Medido em 08/09/2026, e e o que o
-                # Jean via como "tira 200 prints e a chamada do Gemini falha":
-                # a iteracao 2 nascia com orcamento zerado, entao
-                # `timeout_efetivo` ia a zero e TODA chamada estourava na hora.
-                # Parecia o modelo falhando; era o relogio.
-                #
-                # Os outros resolvedores custam um screenshot por rodada, e para
-                # eles repetir aqui ainda faz sentido: a tela pode ter mudado.
-                print("    [captcha] Sequência não resolveu — o resolvedor já "
-                      "repetiu internamente; não reiniciar o ciclo.")
-                _guardar_amostra(page, tipo)
-                _diagnosticar_desafio(page, api_key, tipo,
-                                      _extrair_instrucao(page))
-                return False
         else:
             ok = _solve_imagem(page, api_key, politica=politica)
 
         if not ok:
-            print(f"    [captcha] Iteração {rnd}: solver não resolveu. Próxima tentativa...")
-            # Inerte sem `CAPTCHA_DEBUG_AMOSTRAS_DIR`. Aqui o solver já
-            # desistiu, então não há orçamento a proteger.
+            # SOLVER QUE DESISTIU NAO SE REINICIA AQUI.
+            #
+            # Cada resolvedor JA repete por dentro — 5 rodadas em grade, imagem
+            # e grade_fused, 3 no cartao, 2 na sequencia. Multiplicar pelas 6
+            # iteracoes deste laco dava ate 30 tentativas para o mesmo desafio,
+            # e o orcamento cobre umas 3.
+            #
+            # As outras 27 nasciam com o relogio zerado, e ai `timeout_efetivo`
+            # vai a zero e TODA chamada estoura na hora — produzindo um log de
+            # "falha na chamada ao modelo" que parece problema do provedor e e
+            # do orcamento. Foi o que o Jean via como "sempre falha na segunda
+            # leva": a segunda leva ja comecava sem tempo.
+            #
+            # Este laco existe para o desafio que MUDA (o hCaptcha tem duas
+            # rodadas), e esse caso e tratado adiante, depois de `ok`. Repetir
+            # um solver que acabou de desistir sobre a MESMA tela nao acrescenta
+            # nada: ele ja tentou com todos os modelos e com o segundo provedor.
+            print(f"    [captcha] Iteração {rnd}: solver não resolveu — ele já "
+                  "repetiu internamente; encerrando.")
+            # Inerte sem `CAPTCHA_DEBUG_AMOSTRAS_DIR`.
             _guardar_amostra(page, tipo)
-            continue
+            _diagnosticar_desafio(page, api_key, tipo, _extrair_instrucao(page))
+            return False
 
         # Os solvers já fazem _wait_for_resolve (polling) antes de retornar True,
         # então aqui basta uma folga curta antes de reconfirmar.

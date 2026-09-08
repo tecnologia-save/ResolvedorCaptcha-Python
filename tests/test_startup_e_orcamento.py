@@ -580,14 +580,6 @@ def test_o_teto_duro_e_medido_do_inicio():
 # `timeout_efetivo` ia a zero e TODA chamada estourava na hora. Parecia o modelo
 # falhando; era o relogio.
 
-def test_a_sequencia_nao_reinicia_o_ciclo():
-    import inspect
-    fonte = inspect.getsource(solver.solve_hcaptcha)
-    trecho = fonte[fonte.index("_solve_bola(page"):]
-    trecho = trecho[:trecho.index("else:")] if "else:" in trecho else trecho[:1200]
-    assert "return False" in trecho, (
-        "o resolvedor de sequencia voltou a reiniciar no laco externo")
-
 
 def test_a_captura_da_sequencia_cabe_no_orcamento_do_login():
     """1 x (14 + 30) quadros, e nao 6 x."""
@@ -598,12 +590,41 @@ def test_a_captura_da_sequencia_cabe_no_orcamento_do_login():
         "a captura sozinha come metade do orcamento do login")
 
 
-def test_os_outros_resolvedores_seguem_repetindo():
-    """Eles custam UM screenshot por rodada, e a tela pode ter mudado."""
+
+def test_NENHUM_solver_que_desistiu_reinicia_o_ciclo():
+    """Cada resolvedor JA repete por dentro — 5 rodadas em grade, imagem e
+    grade_fused, 3 no cartao, 2 na sequencia. Multiplicar pelas 6 iteracoes do
+    laco dava ate 30 tentativas para o mesmo desafio, e o orcamento cobre ~3.
+
+    As outras 27 nasciam com o relogio zerado, e ai `timeout_efetivo` vai a zero
+    e toda chamada estoura na hora — log de "falha na chamada ao modelo" que
+    parece problema do provedor e e do orcamento. Foi o "sempre falha na segunda
+    leva".
+    """
     import inspect
     fonte = inspect.getsource(solver.solve_hcaptcha)
-    for chamada in ("_solve_grade(page", "_solve_imagem(page"):
-        pos = fonte.index(chamada)
-        seguinte = fonte[pos:pos + 200]
-        assert "return False" not in seguinte, (
-            f"{chamada} passou a encerrar o ciclo — nao era a intencao")
+    trecho = fonte[fonte.index("if not ok:"):]
+    trecho = trecho[:trecho.index("page.wait_for_timeout")]
+    assert "return False" in trecho, "solver que desistiu voltou a reiniciar"
+    assert "continue" not in trecho, "ainda ha um `continue` no caminho de falha"
+
+
+def test_o_laco_externo_continua_existindo_para_o_desafio_que_MUDA():
+    """E essa a razao de ele existir: o hCaptcha tem duas rodadas.
+
+    O caso legitimo e `ok` verdadeiro com desafio novo na tela — tratado depois,
+    com extensao de orcamento por progresso comprovado.
+    """
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    assert "Desafio ainda ativo após iteração" in fonte
+    assert "progresso comprovado" in fonte
+
+
+def test_o_numero_de_tentativas_por_desafio_ficou_sao():
+    """Antes: ate 30 por desafio. Agora: o que o resolvedor faz por dentro."""
+    import inspect
+    for nome, teto in (("_solve_imagem", 5), ("_solve_grade", 5),
+                       ("_solve_bola", 2)):
+        par = inspect.signature(getattr(solver, nome)).parameters["max_rounds"]
+        assert par.default <= teto, nome

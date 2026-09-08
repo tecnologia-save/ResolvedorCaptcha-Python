@@ -3841,6 +3841,7 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 def solve_hcaptcha(page, max_rounds: int = 6, *,
                    gemini_timeout_ms: int | None = None,
                    deadline_s: float | None = None,
+                   deadline_max_s: float | None = None,
                    tipo_ja_classificado: str | None = None) -> bool:
     """Resolve hCaptcha na página.
 
@@ -3868,6 +3869,9 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
     )
 
     ultimo_tipo = TIPO_DESCONHECIDO
+    # Instante ZERO do orcamento, para o teto duro ser medido a partir do
+    # inicio e nao a partir da ultima extensao.
+    inicio_orcamento = time.monotonic() if deadline_s is not None else None
 
     # Checkbox OU desafio, no mesmo prazo — o que aparecer primeiro. Uma grade
     # já aberta começa a ser classificada de imediato.
@@ -3942,6 +3946,30 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             print(f"    [captcha] Captcha resolvido na iteração {rnd}!")
             return True
 
+        # PROGRESSO COMPROVADO: uma rodada foi submetida com sucesso e OUTRA
+        # apareceu. O hCaptcha faz duas rodadas por desafio, e um teto contado
+        # desde o inicio nao sabe disso — resolve a primeira e e cortado no meio
+        # da segunda, jogando fora o trabalho ja feito.
+        #
+        # E o mesmo erro que a bola sofreu (teto de 35 s dimensionado para uma
+        # rodada), e aqui a correcao e melhor do que aumentar o numero fixo:
+        # so ganha tempo quem MOSTROU que esta avancando. Um desafio que nunca
+        # fecha uma rodada nao recebe extensao nenhuma.
+        #
+        # `deadline_max_s` e o teto duro, e quem chama o define — ele conhece o
+        # limite do consumidor (na representacao, o do portal). Sem ele, nao ha
+        # extensao: o comportamento e o de sempre.
+        if (deadline_max_s is not None and politica.fim is not None
+                and inicio_orcamento is not None):
+            teto_duro = inicio_orcamento + deadline_max_s
+            if politica.fim < teto_duro:
+                novo_fim = min(teto_duro, politica.fim + (deadline_s or 0.0))
+                ganho = novo_fim - politica.fim
+                if ganho > 0.5:
+                    politica = politica._replace(fim=novo_fim)
+                    print(f"    [captcha] Rodada concluída e outra apareceu — "
+                          f"+{ganho:.0f}s de orçamento (progresso comprovado, "
+                          f"teto duro {deadline_max_s:.0f}s).")
         print(f"    [captcha] Desafio ainda ativo após iteração {rnd}. Continuando...")
 
     print(f"    [captcha] Limite de {max_rounds} iterações atingido.")

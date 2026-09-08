@@ -535,3 +535,36 @@ def test_abrir_desafio_e_publico():
     import resolvedor_captcha as pacote
     assert "abrir_desafio" in pacote.__all__
     assert pacote.abrir_desafio is solver.abrir_desafio
+
+
+# ── Extensao por PROGRESSO, nao por generosidade ────────────────────────────
+#
+# O hCaptcha faz duas rodadas por desafio; um teto contado desde o inicio
+# resolve a primeira e e cortado na segunda. Mas so ganha tempo quem MOSTROU que
+# avanca — um desafio que nunca fecha rodada nenhuma nao recebe extensao.
+
+def test_sem_deadline_max_nao_ha_extensao():
+    """Quem nao pediu folego continua com o comportamento de sempre."""
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    assert "deadline_max_s is not None" in fonte, (
+        "a extensao precisa ser condicional a quem chama tê-la pedido")
+
+
+def test_a_extensao_so_acontece_apos_rodada_concluida():
+    """O gancho e o ponto em que uma rodada foi submetida com sucesso E outra
+    apareceu — nao o ponto em que o solver simplesmente falhou."""
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    pos_ext = fonte.index("progresso comprovado")
+    pos_falhou = fonte.index("solver não resolveu")
+    pos_ainda_ativo = fonte.index("Desafio ainda ativo após iteração")
+    assert pos_ext > pos_falhou, "a extensao entrou no caminho de FALHA"
+    assert pos_ext < pos_ainda_ativo
+
+
+def test_o_teto_duro_e_medido_do_inicio():
+    """Se fosse medido da ultima extensao, cada rodada renovaria para sempre."""
+    import inspect
+    fonte = inspect.getsource(solver.solve_hcaptcha)
+    assert "inicio_orcamento + deadline_max_s" in fonte

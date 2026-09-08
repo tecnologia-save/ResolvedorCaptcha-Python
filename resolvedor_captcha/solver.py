@@ -1101,6 +1101,22 @@ OPENAI_MODEL_PADRAO = "gpt-6-astra"
 # ha teste guardando.
 RODIZIO_DO_SEGUNDO_PROVEDOR = 2
 
+# O caminho ANIMADO alcanca o segundo provedor mais cedo, e a razao mudou com o
+# dado de producao.
+#
+# A separacao anterior (2 para todos) mantinha o formato animado longe dele de
+# proposito, porque ele mediu 0/3 contra as amostras da bola. Mas o Jean
+# reportou em 08/09/2026 que NENHUMA animacao foi concluida em producao — nem
+# uma. E `_solve_bola` tem 2 rodadas, entao ele nunca era alcancado ali.
+#
+# 0/3 do segundo provedor contra 0 de N do Gemini: tentar custa UMA chamada e
+# nao pode ser pior do que a falha certa. Os 3 casos que o reprovaram sao poucos
+# demais para vetar a unica alternativa que existe num formato que nao fecha.
+#
+# O estatico continua em 2 — la o Gemini resolve, e a rodada 2 (flash COMPLETO)
+# ainda e um degrau de capacidade que vale gastar.
+RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO = 1
+
 
 def _astra_configurado() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
@@ -1175,7 +1191,8 @@ def _astra_call(contents: list, schema: dict, tag: str,
 
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None,
-                 rodizio: int = 0) -> dict:
+                 rodizio: int = 0,
+                 rodizio_segundo_provedor: int | None = None) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
     Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
@@ -1193,8 +1210,10 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # Esgotado o rodizio, a proxima rodada repetiria um modelo ja ouvido com a
     # mesma imagem — resposta identica garantida. E o espaco onde o segundo
     # provedor cabe sem tirar o lugar de ninguem.
-    if (rodizio >= RODIZIO_DO_SEGUNDO_PROVEDOR and ativos
-            and _astra_configurado()):
+    limite_segundo = (RODIZIO_DO_SEGUNDO_PROVEDOR
+                      if rodizio_segundo_provedor is None
+                      else rodizio_segundo_provedor)
+    if rodizio >= limite_segundo and ativos and _astra_configurado():
         try:
             return _astra_call(contents, schema, tag, politica)
         except Exception as e:  # noqa: BLE001
@@ -3757,7 +3776,8 @@ def _gemini_bola(partes_bin: list[bytes], n_alta: int, api_key: str,
     for png in partes_bin:
         contents.append(_gt.Part.from_bytes(data=png, mime_type="image/jpeg"))
     return _gemini_call(contents, _SCHEMA_BOLA, api_key, "bola", politica,
-                        rodizio=rodizio)
+                        rodizio=rodizio,
+                        rodizio_segundo_provedor=RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO)
 
 
 def _solve_bola(page, api_key: str, max_rounds: int = 2,

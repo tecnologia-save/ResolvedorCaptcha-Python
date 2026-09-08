@@ -404,8 +404,10 @@ def test_o_prompt_de_sequencia_recebe_o_enunciado():
 def test_gemini_bola_aceita_e_repassa_o_enunciado(monkeypatch):
     visto = {}
 
-    def falso(contents, schema, api_key, tag, politica=None, rodizio=0):
+    def falso(contents, schema, api_key, tag, politica=None, rodizio=0,
+              rodizio_segundo_provedor=None):
         visto["texto"] = contents[0]
+        visto["limite_segundo"] = rodizio_segundo_provedor
         return {"ok": 1}
 
     monkeypatch.setattr(solver, "_gemini_call", falso)
@@ -597,3 +599,39 @@ def test_a_decisao_por_enunciado_vem_antes_da_proporcao():
     pos_ratio = fonte.index("0.75 <= ratio <= 1.4")
     assert pos_enunciado < pos_ratio, (
         "a proporcao voltou a decidir o que o enunciado ja respondia")
+
+
+
+# ── O caminho ANIMADO alcanca o segundo provedor ───────────────────────────
+#
+# `_solve_bola` tem 2 rodadas e o limite geral e 2, entao o segundo provedor
+# nunca era alcancado ali. Foi decisao deliberada — ele mediu 0/3 contra as
+# amostras da bola — e o dado de producao a derrubou: em 08/09/2026 NENHUMA
+# animacao foi concluida. 0/3 dele contra 0 de N do Gemini: tentar custa uma
+# chamada e nao pode ser pior que a falha certa.
+
+def test_o_animado_alcanca_o_segundo_provedor_na_segunda_rodada():
+    """Com o limite geral (2) e 2 rodadas, ele nunca era chamado no animado."""
+    import inspect
+    par = inspect.signature(solver._solve_bola).parameters["max_rounds"]
+    assert solver.RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO < par.default, (
+        "o animado voltou a nunca alcancar o segundo provedor")
+
+
+def test_o_animado_pede_limite_proprio(monkeypatch):
+    visto = {}
+
+    def falso(contents, schema, api_key, tag, politica=None, rodizio=0,
+              rodizio_segundo_provedor=None):
+        visto["limite"] = rodizio_segundo_provedor
+        return {"ok": 1}
+
+    monkeypatch.setattr(solver, "_gemini_call", falso)
+    solver._gemini_bola([], 1, "k", instrucao="x")
+    assert visto["limite"] == solver.RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO
+
+
+def test_o_estatico_mantem_o_limite_geral():
+    """La o Gemini resolve, e a rodada 2 (flash COMPLETO) vale gastar."""
+    assert solver.RODIZIO_DO_SEGUNDO_PROVEDOR == 2
+    assert solver.RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO < solver.RODIZIO_DO_SEGUNDO_PROVEDOR

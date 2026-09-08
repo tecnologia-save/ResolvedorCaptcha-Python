@@ -1534,7 +1534,24 @@ def _geometria_estavel(page, caixa_origem: dict | None) -> bool:
 # 520x402 já foram vistos), e um limiar em pixels viraria sensibilidade
 # diferente para cada tamanho.
 BOLA_MOVIMENTO_MIN_FRACAO = 0.003
-BOLA_SONDA_INTERVALO_S = 0.45   # a bola PAUSA sobre cada animal; intervalo curto
+BOLA_SONDA_INTERVALO_S = 0.45
+# Quantas amostras a sonda tira. NAO e detalhe de performance — e o que decide
+# se ela enxerga o movimento.
+#
+# O elemento movel PAUSA sobre cada alvo: e a mesma propriedade que obrigou o
+# `_amostrar_frames_distintos` a existir na captura. Com apenas DUAS amostras a
+# 0,45 s, uma janela que caia dentro de uma pausa nao ve movimento nenhum e
+# conclui "estatico".
+#
+# Medido em producao em 08/09/2026, com o desafio "clique na flor em que a
+# abelha nunca pousa": o MESMO desafio foi classificado `bola_em_movimento` uma
+# vez e `grade_fused` duas — e a diferenca era so em que instante os dois
+# screenshots caíram.
+#
+# 7 amostras x 0,45 s cobrem ~2,7 s, contra um ciclo de animacao de ~9,9 s. Sai
+# CEDO na primeira deteccao, entao o caso animado quase nunca paga o custo
+# inteiro; quem paga e o estatico, e so no caminho ambiguo (sem tiles).
+BOLA_SONDA_AMOSTRAS = 7
 BOLA_SONDA_DIF_MIN = 40         # por canal, para ignorar recompressão
 
 
@@ -1564,23 +1581,37 @@ def _area_do_desafio_se_move(page) -> bool:
             return False
         clip = {"x": caixa["x"], "y": caixa["y"],
                 "width": caixa["width"], "height": caixa["height"]}
-        a = page.screenshot(clip=clip, animations="allow", timeout=4_000)
-        time.sleep(BOLA_SONDA_INTERVALO_S)
-        b = page.screenshot(clip=clip, animations="allow", timeout=4_000)
-
-        ia = Image.open(io.BytesIO(a)).convert("RGB")
-        ib = Image.open(io.BytesIO(b)).convert("RGB")
-        if ia.size != ib.size:
+        primeira = Image.open(io.BytesIO(
+            page.screenshot(clip=clip, animations="allow", timeout=4_000))
+        ).convert("RGB")
+        total = primeira.size[0] * primeira.size[1]
+        if not total:
             return False
-        dif = ImageChops.difference(ia, ib).convert("L")
-        mudou = sum(dif.point(lambda p: 255 if p > BOLA_SONDA_DIF_MIN else 0)
-                    .point(bool).getdata())
-        total = ia.size[0] * ia.size[1]
-        fracao = mudou / total if total else 0.0
-        print(f"    [captcha] Sonda de movimento: {fracao * 100:.2f}% dos pixels "
-              f"mudaram em {BOLA_SONDA_INTERVALO_S:.2f}s "
-              f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%).")
-        return fracao >= BOLA_MOVIMENTO_MIN_FRACAO
+        maior = 0.0
+        # Cada amostra e comparada com a PRIMEIRA, nao com a anterior: um
+        # elemento que sai e volta ao mesmo ponto daria diferenca zero entre
+        # quadros vizinhos, e movimento nenhum seria visto.
+        for i in range(1, BOLA_SONDA_AMOSTRAS):
+            time.sleep(BOLA_SONDA_INTERVALO_S)
+            atual = Image.open(io.BytesIO(
+                page.screenshot(clip=clip, animations="allow", timeout=4_000))
+            ).convert("RGB")
+            if atual.size != primeira.size:
+                return False
+            dif = ImageChops.difference(primeira, atual).convert("L")
+            mudou = sum(dif.point(lambda p: 255 if p > BOLA_SONDA_DIF_MIN else 0)
+                        .point(bool).getdata())
+            fracao = mudou / total
+            maior = max(maior, fracao)
+            if fracao >= BOLA_MOVIMENTO_MIN_FRACAO:
+                print(f"    [captcha] Sonda de movimento: {fracao * 100:.2f}% dos "
+                      f"pixels mudaram em {i * BOLA_SONDA_INTERVALO_S:.2f}s "
+                      f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%) — animado.")
+                return True
+        print(f"    [captcha] Sonda de movimento: máximo {maior * 100:.2f}% em "
+              f"{(BOLA_SONDA_AMOSTRAS - 1) * BOLA_SONDA_INTERVALO_S:.1f}s "
+              f"(limiar {BOLA_MOVIMENTO_MIN_FRACAO * 100:.1f}%) — estático.")
+        return False
     except Exception:  # noqa: BLE001 — sonda nunca derruba a classificação
         return False
 

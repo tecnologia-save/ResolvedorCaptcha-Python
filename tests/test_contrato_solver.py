@@ -434,3 +434,43 @@ def test_a_sonda_de_movimento_nao_depende_de_proporcao():
     pos_faixa = fonte.index("0.75 <= ratio <= 1.4")
     assert pos_sonda < pos_faixa, (
         "a sonda voltou para dentro da faixa de proporcao e perde formatos largos")
+
+
+# ── A sonda tem de cobrir a PAUSA, nao so um instante ───────────────────────
+#
+# Medido em producao em 08/09/2026: o desafio "clique na flor em que a abelha
+# nunca pousa" foi classificado `bola_em_movimento` UMA vez e `grade_fused`
+# DUAS, sendo o mesmo desafio. A diferenca era so em que instante os dois
+# screenshots caíam — a abelha POUSA nas flores, e uma janela de 0,45 s cabe
+# inteira dentro de uma pausa.
+#
+# E a mesma propriedade que obrigou `_amostrar_frames_distintos` a existir na
+# captura, e que eu tinha deixado passar na deteccao.
+
+def test_a_sonda_tira_mais_de_duas_amostras():
+    assert solver.BOLA_SONDA_AMOSTRAS >= 5, (
+        "com poucas amostras a sonda cabe dentro de uma pausa e ve 'estatico'")
+
+
+def test_a_janela_da_sonda_cobre_uma_fatia_util_do_ciclo():
+    """Ciclo da animacao medido: ~9,9 s. A janela precisa ser grande o bastante
+    para atravessar uma pausa, e pequena o bastante para nao comer o orcamento."""
+    janela = (solver.BOLA_SONDA_AMOSTRAS - 1) * solver.BOLA_SONDA_INTERVALO_S
+    assert 2.0 <= janela <= 4.0, f"janela de {janela:.1f}s"
+
+
+def test_a_sonda_compara_com_a_PRIMEIRA_amostra():
+    """Comparar so com a anterior perde o elemento que sai e volta ao mesmo
+    ponto — a diferenca entre quadros vizinhos daria zero."""
+    import inspect
+    fonte = inspect.getsource(solver._area_do_desafio_se_move)
+    assert "primeira" in fonte
+    assert "ImageChops.difference(primeira, atual)" in fonte
+
+
+def test_a_sonda_sai_cedo_quando_detecta():
+    """O caso animado nao pode pagar a janela inteira: ele e o caso comum."""
+    import inspect
+    fonte = inspect.getsource(solver._area_do_desafio_se_move)
+    corpo = fonte[fonte.index("for i in range(1, BOLA_SONDA_AMOSTRAS)"):]
+    assert "return True" in corpo, "sem saida cedo, toda deteccao custa a janela toda"

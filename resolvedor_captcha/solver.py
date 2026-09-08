@@ -1077,45 +1077,27 @@ def preparar_modelos(api_key: str | None = None,
 # Sem OPENAI_API_KEY, nada disso existe e o comportamento e o de antes.
 OPENAI_MODEL_PADRAO = "gpt-6-astra"
 
-# A partir de QUAL rodada o segundo provedor responde.
+# A partir de QUAL rodada o segundo provedor responde. SEGUNDA — pedido do Jean,
+# e a insistencia dele estava certa.
 #
-# Era `len(GEMINI_MODELS)` — so depois de ouvir os tres. O Jean apontou o
-# problema: "se nao passa do modelo gemini mais capaz, nao faz sentido chamar
-# outros que nao tem a mesma capacidade".
+# Historia curta desta constante, porque ela mudou duas vezes hoje e as duas
+# tinham defesa:
 #
-# O detalhe que ajusta o argumento: a lista NAO esta ordenada por capacidade, e
-# sim por latencia medida. O primario e o `flash-lite` (rapido), e o segundo e o
-# `flash` COMPLETO — entao a rodada 2 ja e um degrau real de capacidade.
+#   len(GEMINI_MODELS)  "so depois de ouvir todos os Gemini"
+#   2                   "a rodada 2 e o flash COMPLETO, um degrau real"
+#   1                   agora
 #
-# Quem sobra e a rodada 3, hoje `gemini-3.1-flash-lite`: outro *lite*, e 0/3 na
-# medicao de 08/09/2026 contra as amostras da bola. Insistir nele depois que o
-# flash completo falhou e exatamente o que o Jean descreveu.
+# O que derrubou as duas: em producao, o que NAO fecha e o formato ESTATICO
+# ("clique na figura diferente"), e nele o segundo provedor mediu 3/3 contra as
+# amostras arquivadas — enquanto o Gemini nao fechava. Segurar ele ate a 3a
+# rodada e adiar o unico que acertou, e a rodada 3 as vezes nem chega: medido em
+# 08/09/2026, a rodada 2 levou 39 s por ReadTimeout e banco de modelos, e o
+# orcamento acabou antes.
 #
-#     rodada 1  gemini-3.5-flash-lite   rapido
-#     rodada 2  gemini-3.5-flash        o mais capaz do Gemini
-#     rodada 3  segundo provedor        outro modelo, outro pool
-#
-# Fica em 2 (0-based) e nao em 1 porque o segundo provedor mediu 0/3 na
-# ANIMACAO e 3/3 em imagem estatica. `_solve_bola` tem 2 rodadas e nao alcanca
-# a rodada 3 — a separacao que preserva o 3/3 da bola e consequencia disto, e
-# ha teste guardando.
-RODIZIO_DO_SEGUNDO_PROVEDOR = 2
-
-# O caminho ANIMADO alcanca o segundo provedor mais cedo, e a razao mudou com o
-# dado de producao.
-#
-# A separacao anterior (2 para todos) mantinha o formato animado longe dele de
-# proposito, porque ele mediu 0/3 contra as amostras da bola. Mas o Jean
-# reportou em 08/09/2026 que NENHUMA animacao foi concluida em producao — nem
-# uma. E `_solve_bola` tem 2 rodadas, entao ele nunca era alcancado ali.
-#
-# 0/3 do segundo provedor contra 0 de N do Gemini: tentar custa UMA chamada e
-# nao pode ser pior do que a falha certa. Os 3 casos que o reprovaram sao poucos
-# demais para vetar a unica alternativa que existe num formato que nao fecha.
-#
-# O estatico continua em 2 — la o Gemini resolve, e a rodada 2 (flash COMPLETO)
-# ainda e um degrau de capacidade que vale gastar.
-RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO = 1
+# Meu erro foi dividir isto em dois limites com base numa medicao de TRES
+# amostras da bola — um formato que nao e o que falha. Uma amostra pequena de um
+# caso irrelevante nao pode vetar o que a producao pede.
+RODIZIO_DO_SEGUNDO_PROVEDOR = 1
 
 
 def _astra_configurado() -> bool:
@@ -3776,8 +3758,7 @@ def _gemini_bola(partes_bin: list[bytes], n_alta: int, api_key: str,
     for png in partes_bin:
         contents.append(_gt.Part.from_bytes(data=png, mime_type="image/jpeg"))
     return _gemini_call(contents, _SCHEMA_BOLA, api_key, "bola", politica,
-                        rodizio=rodizio,
-                        rodizio_segundo_provedor=RODIZIO_DO_SEGUNDO_PROVEDOR_ANIMADO)
+                        rodizio=rodizio)
 
 
 def _solve_bola(page, api_key: str, max_rounds: int = 2,

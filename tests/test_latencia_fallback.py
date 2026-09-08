@@ -488,17 +488,6 @@ def test_a_terceira_rodada_ja_e_do_segundo_provedor(monkeypatch):
     assert chamadas["n"] == 1
 
 
-def test_a_bola_continua_sem_alcancar_o_segundo_provedor():
-    """Ele mediu 0/3 na animacao e 3/3 em imagem estatica.
-
-    `_solve_bola` tem 2 rodadas e o segundo provedor entra na 3a — a separacao
-    e consequencia dos dois numeros, nao coincidencia.
-    """
-    import inspect
-    par = inspect.signature(solver._solve_bola).parameters["max_rounds"]
-    assert par.default <= solver.RODIZIO_DO_SEGUNDO_PROVEDOR, (
-        "a bola passou a alcancar o segundo provedor, onde ele fez 0/3")
-
 
 def test_esgotado_o_rodizio_o_segundo_provedor_responde(monkeypatch):
     """A rodada que repetiria um modelo ja ouvido vai para o outro provedor."""

@@ -1100,8 +1100,34 @@ OPENAI_MODEL_PADRAO = "gpt-6-astra"
 RODIZIO_DO_SEGUNDO_PROVEDOR = 1
 
 
+_AVISOU_SEM_SEGUNDO_PROVEDOR = False
+
+
 def _astra_configurado() -> bool:
-    return bool(os.environ.get("OPENAI_API_KEY", "").strip())
+    """Ha segundo provedor? E se NAO ha, isso aparece no log.
+
+    O silencio aqui custou uma tarde inteira em 08/09/2026. A chave da OpenAI
+    foi gravada em nivel de usuario, mas o agente ja estava rodando — no Windows
+    o ambiente e copiado no nascimento do processo, entao ele nunca a viu.
+    `_astra_configurado()` devolvia False e o segundo provedor era pulado sem
+    dizer nada.
+    
+    Passamos horas ajustando EM QUE RODADA ele deveria entrar sem perceber que
+    ele nao podia entrar em nenhuma. Um aviso de uma linha teria encerrado isso
+    na primeira run.
+    
+    Avisa UMA vez por processo: e configuracao, nao evento — repetir a cada
+    rodada so encheria o log.
+    """
+    global _AVISOU_SEM_SEGUNDO_PROVEDOR
+    if os.environ.get("OPENAI_API_KEY", "").strip():
+        return True
+    if not _AVISOU_SEM_SEGUNDO_PROVEDOR:
+        _AVISOU_SEM_SEGUNDO_PROVEDOR = True
+        print("    [captcha] SEM segundo provedor: OPENAI_API_KEY ausente neste "
+              "processo. Se ela foi definida DEPOIS do agente subir, ele não a "
+              "enxerga — o ambiente é copiado no nascimento do processo.")
+    return False
 
 
 def _contents_para_openai(contents: list, schema: dict) -> list:

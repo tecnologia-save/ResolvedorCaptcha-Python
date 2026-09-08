@@ -429,3 +429,36 @@ def test_a_triagem_nao_roda_dentro_do_laco_de_rodadas():
     pos_chamada = fonte.index("_diagnosticar_desafio(")
     pos_limite = fonte.index("Limite de {max_rounds} iterações atingido")
     assert pos_chamada > pos_limite, "a triagem entrou no meio do laço"
+
+
+# ── A ausencia do segundo provedor nao pode ser SILENCIOSA ─────────────────
+#
+# Custou uma tarde em 08/09/2026: a chave foi gravada em nivel de usuario com o
+# agente ja rodando, e no Windows o ambiente e copiado no nascimento do
+# processo. `_astra_configurado()` devolvia False e o segundo provedor era
+# pulado sem dizer nada — passamos horas ajustando EM QUE RODADA ele entra sem
+# perceber que ele nao podia entrar em nenhuma.
+
+def test_sem_chave_o_log_avisa(monkeypatch, capsys):
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(solver, "_AVISOU_SEM_SEGUNDO_PROVEDOR", False)
+    assert solver._astra_configurado() is False
+    saida = capsys.readouterr().out
+    assert "SEM segundo provedor" in saida
+    assert "OPENAI_API_KEY" in saida
+
+
+def test_o_aviso_sai_uma_vez_so(monkeypatch, capsys):
+    """E configuracao, nao evento: repetir a cada rodada encheria o log."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(solver, "_AVISOU_SEM_SEGUNDO_PROVEDOR", False)
+    for _ in range(5):
+        solver._astra_configurado()
+    assert capsys.readouterr().out.count("SEM segundo provedor") == 1
+
+
+def test_com_chave_nao_avisa_nada(monkeypatch, capsys):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-teste")
+    monkeypatch.setattr(solver, "_AVISOU_SEM_SEGUNDO_PROVEDOR", False)
+    assert solver._astra_configurado() is True
+    assert "SEM segundo provedor" not in capsys.readouterr().out

@@ -462,15 +462,42 @@ def test_o_caminho_feliz_do_gemini_NAO_chama_o_segundo_provedor(monkeypatch):
     assert chamadas["n"] == 0
 
 
-def test_rodadas_dentro_do_rodizio_nao_chamam_o_segundo_provedor(monkeypatch):
-    """Enquanto houver modelo do Gemini nao ouvido, e o Gemini que responde."""
+def test_as_duas_primeiras_rodadas_sao_do_gemini(monkeypatch):
+    """Rodada 1 e o rapido; rodada 2 e o flash COMPLETO, o mais capaz do Gemini.
+
+    So a partir da 3a o segundo provedor responde — a lista e ordenada por
+    latencia, entao a rodada 2 ja e um degrau real de capacidade, e quem sobra e
+    o `gemini-3.1-flash-lite`, que fez 0/3 na medicao de 08/09/2026.
+    """
     chamadas = _com_openai(monkeypatch)
     cliente, _ = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
-    for rodada in range(len(solver.GEMINI_MODELS)):
+    for rodada in range(solver.RODIZIO_DO_SEGUNDO_PROVEDOR):
         solver._BANCO.clear()
         solver._gemini_call([], {}, "k", "grade", rodizio=rodada)
     assert chamadas["n"] == 0, "o segundo provedor entrou cedo demais"
+
+
+def test_a_terceira_rodada_ja_e_do_segundo_provedor(monkeypatch):
+    chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
+    cliente, _ = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
+    monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
+    r = solver._gemini_call([], {}, "k", "grade",
+                            rodizio=solver.RODIZIO_DO_SEGUNDO_PROVEDOR)
+    assert r == {"ok": "astra"}
+    assert chamadas["n"] == 1
+
+
+def test_a_bola_continua_sem_alcancar_o_segundo_provedor():
+    """Ele mediu 0/3 na animacao e 3/3 em imagem estatica.
+
+    `_solve_bola` tem 2 rodadas e o segundo provedor entra na 3a — a separacao
+    e consequencia dos dois numeros, nao coincidencia.
+    """
+    import inspect
+    par = inspect.signature(solver._solve_bola).parameters["max_rounds"]
+    assert par.default <= solver.RODIZIO_DO_SEGUNDO_PROVEDOR, (
+        "a bola passou a alcancar o segundo provedor, onde ele fez 0/3")
 
 
 def test_esgotado_o_rodizio_o_segundo_provedor_responde(monkeypatch):

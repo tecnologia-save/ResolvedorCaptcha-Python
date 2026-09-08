@@ -1059,6 +1059,30 @@ def preparar_modelos(api_key: str | None = None,
 # Sem OPENAI_API_KEY, nada disso existe e o comportamento e o de antes.
 OPENAI_MODEL_PADRAO = "gpt-6-astra"
 
+# A partir de QUAL rodada o segundo provedor responde.
+#
+# Era `len(GEMINI_MODELS)` — so depois de ouvir os tres. O Jean apontou o
+# problema: "se nao passa do modelo gemini mais capaz, nao faz sentido chamar
+# outros que nao tem a mesma capacidade".
+#
+# O detalhe que ajusta o argumento: a lista NAO esta ordenada por capacidade, e
+# sim por latencia medida. O primario e o `flash-lite` (rapido), e o segundo e o
+# `flash` COMPLETO — entao a rodada 2 ja e um degrau real de capacidade.
+#
+# Quem sobra e a rodada 3, hoje `gemini-3.1-flash-lite`: outro *lite*, e 0/3 na
+# medicao de 08/09/2026 contra as amostras da bola. Insistir nele depois que o
+# flash completo falhou e exatamente o que o Jean descreveu.
+#
+#     rodada 1  gemini-3.5-flash-lite   rapido
+#     rodada 2  gemini-3.5-flash        o mais capaz do Gemini
+#     rodada 3  segundo provedor        outro modelo, outro pool
+#
+# Fica em 2 (0-based) e nao em 1 porque o segundo provedor mediu 0/3 na
+# ANIMACAO e 3/3 em imagem estatica. `_solve_bola` tem 2 rodadas e nao alcanca
+# a rodada 3 — a separacao que preserva o 3/3 da bola e consequencia disto, e
+# ha teste guardando.
+RODIZIO_DO_SEGUNDO_PROVEDOR = 2
+
 
 def _astra_configurado() -> bool:
     return bool(os.environ.get("OPENAI_API_KEY", "").strip())
@@ -1151,7 +1175,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # Esgotado o rodizio, a proxima rodada repetiria um modelo ja ouvido com a
     # mesma imagem — resposta identica garantida. E o espaco onde o segundo
     # provedor cabe sem tirar o lugar de ninguem.
-    if rodizio >= len(ativos) and ativos and _astra_configurado():
+    if (rodizio >= RODIZIO_DO_SEGUNDO_PROVEDOR and ativos
+            and _astra_configurado()):
         try:
             return _astra_call(contents, schema, tag, politica)
         except Exception as e:  # noqa: BLE001

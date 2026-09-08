@@ -633,3 +633,91 @@ def test_todo_resolvedor_alcanca_o_segundo_provedor():
                  "_solve_grade_fused"):
         par = inspect.signature(getattr(solver, nome)).parameters["max_rounds"]
         assert par.default > solver.RODIZIO_DO_SEGUNDO_PROVEDOR, nome
+
+
+# ── O guardiao de frescor tolera FUNDO ANIMADO ─────────────────────────────
+#
+# O hash byte a byte era estrito demais: ESTES desafios tem fundo animado.
+# Medido em 08/09/2026 nos quadros reais, com o desafio parado, 0,27% a 0,42%
+# dos pixels mudam sozinhos entre duas capturas. Um hash exato nunca bate — o
+# modelo respondia certo e a resposta era descartada como "desafio mudou".
+#
+# Registrado em producao, tres respostas boas jogadas fora em sequencia, com
+# confianca high/medium/high.
+
+def _png(cor, tam=(100, 100)):
+    import io as _io
+
+    from PIL import Image
+    buf = _io.BytesIO()
+    Image.new("RGB", tam, cor).save(buf, "PNG")
+    return buf.getvalue()
+
+
+def _png_com_ruido(fracao, tam=(100, 100)):
+    """Imagem base com `fracao` dos pixels alterados."""
+    import io as _io
+
+    from PIL import Image
+    im = Image.new("RGB", tam, (10, 10, 10))
+    total = tam[0] * tam[1]
+    alvo = int(total * fracao)
+    px = im.load()
+    for i in range(alvo):
+        px[i % tam[0], i // tam[0]] = (250, 250, 250)
+    buf = _io.BytesIO()
+    im.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def test_o_limiar_separa_fundo_animado_de_troca_de_desafio():
+    """Fundo da decimos de porcento; troca real muda a cena inteira."""
+    FUNDO_ANIMADO_MEDIDO = 0.0042      # pior caso medido
+    TROCA_REAL_MEDIDA = 0.09           # 42.924 px em 651x714
+    assert FUNDO_ANIMADO_MEDIDO < solver.DESAFIO_MUDOU_MIN_FRACAO < TROCA_REAL_MEDIDA
+
+
+def test_diferenca_pequena_conta_como_MESMO_desafio(monkeypatch):
+    base = _png_com_ruido(0.0)
+    quase = _png_com_ruido(0.004)      # 0,4% — fundo animado
+    monkeypatch.setattr(solver, "_challenge_visible", lambda _p: True)
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (quase, None))
+    monkeypatch.setattr(solver, "_fingerprint_desafio", lambda _p, _b: "outro")
+    assert solver._desafio_ainda_e_o_mesmo(object(), "origem", base) is True
+
+
+def test_diferenca_grande_conta_como_OUTRO_desafio(monkeypatch):
+    base = _png_com_ruido(0.0)
+    outro = _png_com_ruido(0.40)
+    monkeypatch.setattr(solver, "_challenge_visible", lambda _p: True)
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (outro, None))
+    monkeypatch.setattr(solver, "_fingerprint_desafio", lambda _p, _b: "outro")
+    assert solver._desafio_ainda_e_o_mesmo(object(), "origem", base) is False
+
+
+def test_sem_imagem_de_origem_continua_estrito(monkeypatch):
+    """Sem com o que comparar, a duvida resolve contra clicar."""
+    monkeypatch.setattr(solver, "_challenge_visible", lambda _p: True)
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (_png("red"), None))
+    monkeypatch.setattr(solver, "_fingerprint_desafio", lambda _p, _b: "outro")
+    assert solver._desafio_ainda_e_o_mesmo(object(), "origem", None) is False
+
+
+def test_hash_igual_continua_sendo_caminho_rapido(monkeypatch):
+    monkeypatch.setattr(solver, "_challenge_visible", lambda _p: True)
+    monkeypatch.setattr(solver, "_capturar_desafio", lambda _p: (b"x", None))
+    monkeypatch.setattr(solver, "_fingerprint_desafio", lambda _p, _b: "igual")
+    assert solver._desafio_ainda_e_o_mesmo(object(), "igual", None) is True
+
+
+def test_desafio_ausente_nunca_e_o_mesmo(monkeypatch):
+    monkeypatch.setattr(solver, "_challenge_visible", lambda _p: False)
+    assert solver._desafio_ainda_e_o_mesmo(object(), "origem", b"x") is False
+
+
+def test_todos_os_resolvedores_passam_a_imagem_de_origem():
+    """Sem ela a checagem cai no modo estrito e o defeito volta."""
+    import inspect
+    fonte = inspect.getsource(solver)
+    assert "_desafio_ainda_e_o_mesmo(page, fingerprint)" not in fonte, (
+        "algum resolvedor voltou a chamar sem a imagem de origem")

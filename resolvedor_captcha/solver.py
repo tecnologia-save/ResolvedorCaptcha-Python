@@ -1522,11 +1522,40 @@ def _fingerprint_desafio(page, png: bytes | None) -> str | None:
     return h.hexdigest()
 
 
-def _desafio_ainda_e_o_mesmo(page, fingerprint_origem: str | None) -> bool:
+# Fracao de pixels que precisa mudar para o desafio contar como OUTRO.
+#
+# O hash byte a byte era estrito demais, e isso custava caro: ESTES desafios tem
+# FUNDO ANIMADO. Medido em 08/09/2026 nos quadros reais, com o desafio parado e
+# nada acontecendo, 0,27% a 0,42% dos pixels mudam sozinhos entre duas capturas.
+# Um hash exato nunca bate — entao o modelo respondia certo e a resposta era
+# descartada como "desafio mudou", quando o que mudou foi o fundo.
+#
+# Registrado em producao, tres respostas boas jogadas fora em sequencia:
+#
+#     'flor em que a abelha pousa'                | high   | tiles=[1]
+#     'flores em que a abelha nao esta pousando'  | medium | tiles=[1, 6, 8]
+#     'flores onde a abelha nao esta pousada'     | high   | tiles=[1, 3, 4, 8]
+#     -> resposta descartada: desafio mudou   (nas tres)
+#
+# O `_solve_bola` ja tinha aprendido isso e usa enunciado + geometria; os
+# resolvedores estaticos ficaram para tras.
+#
+# 5% separa com folga os dois mundos: fundo animado da decimos de porcento, e
+# troca real de desafio muda a cena inteira — medido, 42.924 px numa area de
+# 651x714, que sao ~9%.
+DESAFIO_MUDOU_MIN_FRACAO = 0.05
+
+
+def _desafio_ainda_e_o_mesmo(page, fingerprint_origem: str | None,
+                             png_origem: bytes | None = None) -> bool:
     """True SO se o desafio atual for COMPROVADAMENTE o que gerou a analise.
 
     Devolve False em qualquer indeterminacao: desafio ausente, enunciado
     ilegivel, recaptura falhada ou fingerprint de origem inexistente.
+
+    A comparacao de IMAGEM tolera fundo animado (ver DESAFIO_MUDOU_MIN_FRACAO);
+    o ENUNCIADO continua exigido igual, e e ele que pega a troca de rodada — o
+    hCaptcha muda o texto entre uma e outra.
     """
     if not fingerprint_origem:
         return False
@@ -1534,7 +1563,30 @@ def _desafio_ainda_e_o_mesmo(page, fingerprint_origem: str | None) -> bool:
         return False
     png, _caixa = _capturar_desafio(page)
     atual = _fingerprint_desafio(page, png)
-    return bool(atual) and atual == fingerprint_origem
+    if not atual:
+        return False
+    if atual == fingerprint_origem:
+        return True
+    # Difere no hash. Foi o fundo, ou e outro desafio?
+    if not (_PIL and png and png_origem):
+        return False
+    try:
+        a = Image.open(io.BytesIO(png_origem)).convert("RGB")
+        b = Image.open(io.BytesIO(png)).convert("RGB")
+        if a.size != b.size:
+            return False
+        dif = ImageChops.difference(a, b).convert("L")
+        mudou = sum(dif.point(lambda p: 255 if p > 40 else 0).point(bool).getdata())
+        fracao = mudou / (a.size[0] * a.size[1])
+        if fracao < DESAFIO_MUDOU_MIN_FRACAO:
+            print(f"    [captcha] Desafio é o mesmo ({fracao * 100:.2f}% de "
+                  "diferença — fundo animado, não troca de desafio).")
+            return True
+        print(f"    [captcha] Desafio realmente mudou ({fracao * 100:.1f}% "
+              "de diferença).")
+        return False
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _mesma_caixa(a: dict | None, b: dict | None,
@@ -3244,7 +3296,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
         )
 
         # ── FRESHNESS GUARD — última coisa antes do PRIMEIRO clique ──────────
-        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint, png):
             print(f"    [captcha/grade] {MSG_DESCARTE}")
             continue   # descarta a resposta INTEIRA e recaptura na próxima rodada
 
@@ -3394,7 +3446,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         # clique é por PIXEL, com `grid_page_bbox` calculada ANTES do Gemini.
         # Um scroll não muda um pixel da imagem e ainda assim manda o clique
         # para um ponto arbitrário da página.
-        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint, iframe_png):
             print(f"    [captcha/grade_fused] {MSG_DESCARTE}")
             continue
         if not _geometria_estavel(page, iframe_box):
@@ -3479,7 +3531,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             continue
 
         # ── FRESHNESS GUARD — antes de qualquer clique ou digitação ──────────
-        if not _desafio_ainda_e_o_mesmo(page, fingerprint):
+        if not _desafio_ainda_e_o_mesmo(page, fingerprint, _png_ident):
             print(f"    [captcha/imagem] {MSG_DESCARTE}")
             continue
 

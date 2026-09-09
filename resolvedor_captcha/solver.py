@@ -4102,6 +4102,52 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 # Ponto de entrada público
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Teto por chamada, POR TIPO de desafio.
+#
+# Ate 09/09/2026 o login mandava 20 s para tudo. Esse numero nasceu de uma
+# medicao na grade 3x3 — `16/16, 2,2 s` — e foi aplicado a requisicoes que nao
+# se parecem em nada com aquela. No mesmo dia, 14 das 24 falhas do Gemini foram
+# `ReadTimeout`: teto NOSSO estourando, nao o Google recusando. Outras 6 foram
+# 504 DEADLINE_EXCEEDED, que e o Google dizendo que ELE nao terminou a tempo.
+#
+# O que muda entre os tipos e o tamanho e a natureza do que se envia:
+#
+#     grade / grade_fused  9 tiles pequenos                 -> a medicao dos 2,2 s
+#     imagem               1 screenshot com malha 20x20      -> 445 KB, muito mais pesado
+#     bola / cartao        8 quadros de uma sequencia        -> 8 imagens numa requisicao
+#
+# Um teto unico ou sufoca o pesado ou desperdicia no leve. E desperdicio aqui
+# nao e neutro: o orcamento e TOTAL, entao segundo gasto num modelo que nao vai
+# responder e segundo roubado do proximo — e do segundo provedor, que so e
+# chamado depois.
+#
+# Estes valores sao ponto de partida derivado do que ja se mediu, e a linha de
+# log diz qual foi aplicado — para a proxima calibragem sair de numero, e nao
+# de palpite.
+TETO_POR_TIPO_MS = {
+    TIPO_GRADE:         12_000,
+    TIPO_GRADE_FUSED:   12_000,
+    TIPO_IMAGEM:        30_000,
+    TIPO_BOLA:          30_000,
+    TIPO_CARTAO_ANIMAL: 30_000,
+}
+
+
+def _teto_do_tipo(tipo: str, politica: PoliticaLatencia) -> PoliticaLatencia:
+    """Ajusta o teto por chamada ao tipo, sem nunca passar do orcamento total.
+
+    Quem chama define o ORCAMENTO (`fim`); o tipo define quanto vale a pena
+    esperar por UMA resposta dentro dele. Sao decisoes diferentes e estavam
+    coladas no mesmo numero.
+    """
+    novo = TETO_POR_TIPO_MS.get(tipo)
+    if novo is None or novo == politica.timeout_ms:
+        return politica
+    print(f"    [captcha] Teto por chamada ajustado ao tipo: "
+          f"{politica.timeout_ms / 1000:.0f}s -> {novo / 1000:.0f}s ({tipo}).")
+    return politica._replace(timeout_ms=novo)
+
+
 def solve_hcaptcha(page, max_rounds: int = 6, *,
                    gemini_timeout_ms: int | None = None,
                    deadline_s: float | None = None,
@@ -4180,6 +4226,7 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
             timeout_det = 10_000 if rnd == 1 else 5_000
             tipo = _detect_challenge_type(page, timeout_ms=timeout_det)
         ultimo_tipo = tipo
+        politica = _teto_do_tipo(tipo, politica)
 
         if tipo == "nenhum":
             print("    [captcha] Nenhum desafio ativo. Captcha concluído.")

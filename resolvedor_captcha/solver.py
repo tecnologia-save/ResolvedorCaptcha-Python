@@ -4299,12 +4299,18 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 # economia deveria evitar, e cada falha custa a rodada inteira — muito mais
 # caro que os segundos poupados.
 #
-# 25s da folga sobre os 20s que ja produziam 504 ocasional. E agora da para ser
-# generoso: com o astra cobrindo a grade como reserva, uma demora do Gemini
-# nao custa mais o desafio.
+# 40s, e nao 25s: os 20s originais JA produziam 504 ocasional, entao qualquer
+# numero proximo disso continua cortando o Gemini no meio. Decisao do Jean,
+# explicita — "foda-se o orcamento, aumenta pra 30 ou 40s" —, e o raciocinio
+# de custo dele fecha: o Gemini e barato e acerta 16/16 aqui, entao esperar
+# por ele sai MUITO mais em conta do que empurrar a grade para o provedor
+# pago so porque a espera incomoda.
+#
+# Teto por chamada so vale se o orcamento TOTAL couber: os deadlines em
+# `servicos_rf_login/login.py` subiram junto, senao este numero seria enfeite.
 TETO_POR_TIPO_MS = {
-    TIPO_GRADE:         25_000,
-    TIPO_GRADE_FUSED:   25_000,
+    TIPO_GRADE:         40_000,
+    TIPO_GRADE_FUSED:   40_000,
     TIPO_IMAGEM:        30_000,
     TIPO_BOLA:          30_000,
     TIPO_CARTAO_ANIMAL: 30_000,

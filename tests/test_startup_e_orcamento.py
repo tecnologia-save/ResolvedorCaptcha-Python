@@ -275,8 +275,18 @@ def relogio(monkeypatch):
 def test_a_run_real_reproduzida_dois_timeouts_e_o_terceiro_responde(monkeypatch, relogio):
     """Com a politica rapida, os tres modelos cabem no orcamento.
 
-    Cada timeout consome o teto individual (10 s), nao os 30 s do padrao — e o
-    terceiro so ganha o que ainda sobra do total.
+    Cada timeout consome o teto individual (10 s), nao os 30 s do padrao.
+
+    O orcamento subiu de 25 s para 30 s em 09/09/2026. Com 25 s o terceiro
+    modelo recebia 5 s, e a API REAL recusa isso:
+
+        400 INVALID_ARGUMENT — "Manually set deadline 2s is too short.
+                                Minimum allowed deadline is 10s."
+
+    Ou seja, a versao antiga deste teste passava simulando uma chamada que em
+    producao nunca teria acontecido: viravam 400, e eu passei dois dias
+    procurando um campo invalido inexistente por causa deles. O orcamento agora
+    da aos tres o minimo que o servidor aceita.
     """
     cliente, chamadas = _cliente({
         solver.GEMINI_MODELS[0]: TimeoutError("ReadTimeout"),
@@ -286,10 +296,10 @@ def test_a_run_real_reproduzida_dois_timeouts_e_o_terceiro_responde(monkeypatch,
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
 
     inicio = relogio[0]
-    politica = solver.PoliticaLatencia(timeout_ms=10_000, fim=inicio + 25.0)
+    politica = solver.PoliticaLatencia(timeout_ms=10_000, fim=inicio + 30.0)
     assert solver._gemini_call([], {}, "k", "grade", politica) == {"ok": 3}
-    assert [t for _m, t in chamadas] == [10_000, 10_000, 5_000]
-    assert relogio[0] - inicio <= 30.0
+    assert [t for _m, t in chamadas] == [10_000, 10_000, 10_000]
+    assert relogio[0] - inicio <= 35.0
 
 
 def test_o_orcamento_esgotado_interrompe_a_cadeia(monkeypatch, relogio):
@@ -302,7 +312,10 @@ def test_o_orcamento_esgotado_interrompe_a_cadeia(monkeypatch, relogio):
     politica = solver.PoliticaLatencia(timeout_ms=10_000, fim=relogio[0] + 15.0)
     with pytest.raises(RuntimeError):
         solver._gemini_call([], {}, "k", "grade", politica)
-    assert len(chamadas) == 2          # o terceiro nao chegou a ser tentado
+    # UMA, nao duas. Depois do primeiro timeout sobram 5 s, e 5 s e menos que o
+    # minimo que o Gemini aceita — a segunda ida so traria um 400. Antes de
+    # 09/09/2026 esse teste esperava 2, porque ninguem sabia do piso de 10 s.
+    assert len(chamadas) == 1
 
 
 def test_sem_politica_a_cadeia_usa_o_teto_de_sempre(monkeypatch, relogio):

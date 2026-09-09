@@ -630,3 +630,33 @@ def test_astra_respeita_o_que_resta_do_orcamento():
     fonte = inspect.getsource(solver._astra_call)
     assert "restante_s" in fonte and "min(" in fonte, (
         "o piso tem de ser limitado pelo que sobra do orcamento")
+
+
+# ── O piso de prazo do proprio Gemini ───────────────────────────────────────
+
+def test_nao_chama_o_gemini_com_prazo_que_ele_recusa():
+    """Medido em producao, 09/09/2026:
+
+        400 INVALID_ARGUMENT — "Manually set deadline 2s is too short.
+                                Minimum allowed deadline is 10s."
+
+    Passavamos o resto do orcamento como prazo da chamada. Com o orcamento no
+    fim isso virava 2s, e o 400 que apareceu quatro vezes era o servidor
+    recusando um pedido impossivel — NOSSO. Cheguei a escrever um contorno para
+    `thinking_config` por causa desses 400, tratando o sintoma errado.
+    """
+    assert solver.GEMINI_DEADLINE_MIN_MS >= 10_000
+
+
+def test_cota_estourada_para_a_cadeia_mas_503_e_timeout_nao():
+    """A distincao custou uma rodada de testes vermelhos para eu aceitar.
+
+    429 e da CHAVE: trocar de modelo com a cota estourada paga outra ida para
+    ouvir o mesmo nao. Mas 503 diz "This MODEL is currently experiencing high
+    demand" — o proprio Google delimita o escopo — e timeout tem contraexemplo
+    reproduzido de run real, com dois modelos estourando e o terceiro
+    respondendo. Generalizar os tres jogaria fora respostas disponiveis.
+    """
+    assert "limite_de_uso" in solver.CATEGORIAS_DE_PROVEDOR_FORA
+    assert "indisponivel" not in solver.CATEGORIAS_DE_PROVEDOR_FORA
+    assert "tempo_esgotado" not in solver.CATEGORIAS_DE_PROVEDOR_FORA

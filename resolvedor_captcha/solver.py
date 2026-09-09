@@ -1090,6 +1090,49 @@ OPENAI_MODEL_PADRAO = "gpt-6-astra"
 # chamada de visao com imagem de ~450 KB nao cabe em 10s.
 ASTRA_TIMEOUT_MIN_S = 30.0
 
+# O Gemini RECUSA prazo abaixo disto, com 400 INVALID_ARGUMENT:
+#     "Manually set deadline 2s is too short. Minimum allowed deadline is 10s."
+#
+# A gente passava o restante do orcamento como deadline da chamada. Com o
+# orcamento no fim, isso virava 2s — e o 400 que apareceu quatro vezes em dois
+# dias era NOSSO pedido impossivel, nao um campo invalido. Cheguei a codificar
+# um contorno para `thinking_config` por causa disso, tratando o sintoma errado.
+#
+# Abaixo deste piso a chamada nao pode dar certo, entao nao se faz: gasta-se
+# uma ida ao servidor para receber a recusa e o desafio envelhece de graca.
+GEMINI_DEADLINE_MIN_MS = 10_000
+
+# Falhas que dizem "o PROVEDOR esta fora", e nao "este MODELO nao serviu".
+#
+# Os tres modelos do Gemini nao sao alternativas independentes: mesma
+# infraestrutura, mesma cota, mesma fila. Medido em 09/09/2026 as 14:59 —
+# 3.5-flash devolveu 503 "high demand" e 3.1-flash-lite devolveu 503 igual, um
+# atras do outro. Percorrer a lista inteira e descobrir tres vezes a mesma
+# indisponibilidade, pagando o orcamento por cada descoberta.
+#
+# E o preco nao para ai: com o orcamento gasto, a chamada seguinte ao segundo
+# provedor herda o troco. Na mesma run, o astra respondeu em 6,9s quando teve
+# 30s, e deu timeout quando sobrou o resto.
+#
+# So o que e comprovadamente da CONTA, e nao do modelo.
+#
+# Eu tinha posto 503 e timeout aqui tambem, e a suite derrubou os dois com
+# evidencia melhor que a minha:
+#
+#   timeout — um teste reproduz uma run real em que DOIS modelos deram
+#             ReadTimeout e o TERCEIRO respondeu. E lentidao momentanea de um
+#             modelo, nao queda do provedor.
+#   503     — a mensagem do proprio Google e "This MODEL is currently
+#             experiencing high demand". Ele afirma o escopo, e o escopo e o
+#             modelo. Dois 503 seguidos em 09/09 me pareceram prova de queda
+#             geral; eram duas ocorrencias independentes.
+#
+# 429 e diferente: cota e da chave, nao do modelo. Trocar de modelo com a cota
+# estourada e pagar outra ida para ouvir o mesmo nao.
+CATEGORIAS_DE_PROVEDOR_FORA = frozenset({
+    "limite_de_uso",    # 429 — cota da conta, comum aos tres
+})
+
 # A partir de QUAL rodada o segundo provedor responde. SEGUNDA — pedido do Jean,
 # e a insistencia dele estava certa.
 #
@@ -1299,7 +1342,19 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
         ativos = ativos[giro:] + ativos[:giro]
+    provedor_fora = False
     for mi, model in enumerate(ativos):
+        if provedor_fora:
+            print(f"    [captcha/{tag}] '{model}' e os demais ficam de fora: "
+                  f"a cota é da CHAVE, não do modelo. Indo direto ao segundo "
+                  f"provedor.")
+            break
+        if politica.timeout_efetivo_ms() < GEMINI_DEADLINE_MIN_MS:
+            print(f"    [captcha/{tag}] restam "
+                  f"{politica.timeout_efetivo_ms() / 1000:.0f}s e o Gemini "
+                  f"recusa prazo abaixo de "
+                  f"{GEMINI_DEADLINE_MIN_MS / 1000:.0f}s — não vale a ida.")
+            break
         if politica.esgotado:
             # Orçamento acabou: tentar o próximo modelo só adiaria o mesmo
             # desfecho, agora com o screenshot ainda mais velho.
@@ -1330,6 +1385,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                       f"{_diagnostico_erro(e, model)} | "
                       f"tentativa={attempt}/{GEMINI_TRIES_PER_MODEL}")
                 _despejar_erro_para_diagnostico(e, tag, model)
+                if _categoria_do_erro(e) in CATEGORIAS_DE_PROVEDOR_FORA:
+                    provedor_fora = True
 
                 # 400 = a requisição é NOSSA, e há um suspeito nomeado no
                 # docstring de `_make_config`: estes modelos respondem

@@ -595,3 +595,38 @@ def test_se_o_segundo_provedor_tambem_cair_o_erro_e_do_gemini(monkeypatch):
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
     with pytest.raises(RuntimeError, match="falhou em todos os modelos"):
         solver._gemini_call([], {}, "k", "grade")
+
+
+# ── O segundo provedor nao herda o orcamento de quem falhou ─────────────────
+
+def test_astra_tem_piso_de_tempo_proprio():
+    """Herdar o teto do Gemini invertia o incentivo.
+
+    O astra so e chamado DEPOIS que o Gemini nao fechou. Com teto herdado,
+    quanto pior o Gemini estivesse, menos tempo sobrava para o substituto —
+    justamente quando ele e mais necessario.
+
+    Medido em 09/09/2026: os tres modelos do Gemini devolveram 504
+    DEADLINE_EXCEEDED, e as quatro chamadas seguintes ao astra tiveram ~10s
+    cada. Nenhuma recebeu resposta.
+    """
+    assert solver.ASTRA_TIMEOUT_MIN_S >= 25.0, (
+        "abaixo disto uma chamada de visao com imagem nao fecha")
+
+
+def test_astra_nao_retenta_por_dentro_do_sdk():
+    """`max_retries` padrao do SDK e 2, e sob teto apertado isso divide o mesmo
+    tempo em tentativas menores — uma chance ruim vira tres piores, sem que
+    nada apareca no log ate o fim. Quem retenta e o laco de fora, que recaptura
+    a tela antes de perguntar de novo."""
+    import inspect
+    fonte = inspect.getsource(solver._astra_call)
+    assert "max_retries=0" in fonte
+
+
+def test_astra_respeita_o_que_resta_do_orcamento():
+    """Piso nao pode virar licenca para estourar o teto total da run."""
+    import inspect
+    fonte = inspect.getsource(solver._astra_call)
+    assert "restante_s" in fonte and "min(" in fonte, (
+        "o piso tem de ser limitado pelo que sobra do orcamento")

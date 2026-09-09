@@ -1077,6 +1077,19 @@ def preparar_modelos(api_key: str | None = None,
 # Sem OPENAI_API_KEY, nada disso existe e o comportamento e o de antes.
 OPENAI_MODEL_PADRAO = "gpt-6-astra"
 
+# Teto de tempo do segundo provedor, em segundos.
+#
+# Ele NAO pode herdar o do Gemini. O astra so e chamado depois que o Gemini
+# nao fechou, entao herdar o orcamento significa receber o que sobrou de quem
+# acabou de falhar — e quanto PIOR o Gemini esta, MENOS tempo o substituto
+# ganha. Exatamente ao contrario do que um substituto precisa.
+#
+# Medido em 09/09/2026: os tres modelos do Gemini devolveram 504
+# DEADLINE_EXCEEDED gastando a rodada inteira, e o astra foi chamado quatro
+# vezes com ~10s cada. Nenhuma das quatro chegou a receber resposta. Uma
+# chamada de visao com imagem de ~450 KB nao cabe em 10s.
+ASTRA_TIMEOUT_MIN_S = 30.0
+
 # A partir de QUAL rodada o segundo provedor responde. SEGUNDA — pedido do Jean,
 # e a insistencia dele estava certa.
 #
@@ -1184,8 +1197,19 @@ def _astra_call(contents: list, schema: dict, tag: str,
     modelo = os.environ.get("OPENAI_MODEL", "").strip() or OPENAI_MODEL_PADRAO
     base = os.environ.get("OPENAI_BASE_URL", "").strip() or None
     politica = _politica(politica)
+    # Piso proprio, e nunca alem do que resta do orcamento total.
+    #
+    # `max_retries=0` porque o padrao do SDK e 2: sob teto apertado, a
+    # repeticao interna divide o mesmo tempo em tentativas ainda menores e
+    # transforma uma chance ruim em tres chances piores — tudo isso invisivel,
+    # porque o SDK so levanta o erro no fim. Quem retenta aqui e o laco de
+    # fora, que recaptura a tela antes de perguntar de novo.
+    restante_s = politica.restante_ms / 1000 if politica.fim is not None else None
+    teto_s = max(politica.timeout_efetivo_ms() / 1000, ASTRA_TIMEOUT_MIN_S)
+    if restante_s is not None:
+        teto_s = max(1.0, min(teto_s, restante_s))
     cliente = OpenAI(api_key=chave, base_url=base,
-                     timeout=politica.timeout_efetivo_ms() / 1000)
+                     timeout=teto_s, max_retries=0)
     print(f"    [captcha/{tag}] Gemini não fechou — perguntando ao segundo "
           f"provedor.")
     # Sem `temperature`: este modelo recusa 0 ("Only the default (1) value is

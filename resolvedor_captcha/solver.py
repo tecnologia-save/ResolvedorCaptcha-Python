@@ -2846,6 +2846,79 @@ def _click_fused_grade_tiles(page, indices: list[int],
             print(f"    [captcha] Erro ao clicar tile fused {idx}: {type(e).__name__}")
 
 
+ESQUEMA_PIXEL = {
+    "type": "object",
+    "properties": {
+        "x": {"type": "integer", "description": "Coluna do pixel, 0 = borda esquerda."},
+        "y": {"type": "integer", "description": "Linha do pixel, 0 = borda de cima."},
+        "description": {"type": "string", "description": "Que figura e essa, e por que ela destoa."},
+        "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
+    },
+    "required": ["x", "y", "confidence"],
+}
+
+
+def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
+                  politica: PoliticaLatencia | None = None, rodizio: int = 0) -> dict:
+    """Pergunta o CENTRO da figura em pixels, sem malha desenhada por cima.
+
+    Medido em 09/09/2026 contra as amostras arquivadas de "figura diferente",
+    com as respostas marcadas na imagem para conferencia visual:
+
+        com malha 20x20   caiu na agua vazia entre duas pipas; 10-26s
+        pixel direto      caiu em cima da pipa de painel verde, a certa; 2-5s
+
+    Nas duas amostras com gabarito verificado a malha errou e o pixel acertou.
+    Faz sentido: a malha existia para dar ao modelo um vocabulario de posicao,
+    mas ela DESENHA linhas e numeros sobre uma imagem que ja e camuflagem
+    deliberada — soma ruido ao problema que o modelo tem de resolver, e o
+    formato "figura diferente" e justamente o que depende de ver a forma.
+
+    A grade 3x3 continua com `_gemini_grid`: la os tiles ja sao celulas de
+    verdade, entao a malha nao inventa nada.
+    """
+    largura, altura = _dimensoes_png(png)
+    prompt = (
+        f'Instrução do captcha: "{_limpar_texto(instrucao)}". '
+        f"A imagem tem {largura}x{altura} pixels. Compare as figuras ENTRE SI "
+        f"e escolha a que destoa das demais. "
+        f"Responda o CENTRO dela em pixels da imagem: x de 0 a {largura - 1}, "
+        f"y de 0 a {altura - 1}, com 0,0 no canto superior esquerdo. "
+        f"Um ponto só — o enunciado pede um clique."
+    )
+    return _gemini_call([_parte_imagem(png), prompt], ESQUEMA_PIXEL, api_key,
+                        "imagem", politica, rodizio=rodizio)
+
+
+def _dimensoes_png(png: bytes) -> tuple[int, int]:
+    """(largura, altura) da imagem, para o prompt e para a conversao do clique."""
+    from PIL import Image
+    with Image.open(io.BytesIO(png)) as im:
+        return im.size
+
+
+def _click_pixel(page, ponto: dict, bbox: dict, tamanho: tuple[int, int]) -> None:
+    """Converte pixel-da-imagem em pixel-do-viewport e clica.
+
+    Passa por FRACAO de propósito: o screenshot pode sair em escala diferente
+    do bbox (devicePixelRatio), e converter direto somaria um erro silencioso
+    de posicao — exatamente o tipo de defeito que a malha escondia, porque ela
+    ja trabalhava em proporcao.
+    """
+    larg, alt = tamanho
+    fx = max(0.0, min(1.0, ponto["x"] / max(1, larg)))
+    fy = max(0.0, min(1.0, ponto["y"] / max(1, alt)))
+    x = bbox["x"] + fx * bbox["width"]
+    y = bbox["y"] + fy * bbox["height"]
+    _mover_cursor_suave(1)
+    try:
+        page.mouse.click(x, y)
+        print(f"    [captcha] Pixel ({ponto['x']},{ponto['y']}) -> ({x:.0f},{y:.0f}) "
+              f"| {ponto.get('description', '')}")
+    except Exception as e:  # noqa: BLE001
+        print(f"    [captcha] Erro ao clicar pixel: {type(e).__name__}")
+
+
 def _click_grid_positions(page, positions: list[dict], bbox: dict) -> None:
     """Converte col/row → pixels viewport e clica."""
     if not positions:
@@ -3778,8 +3851,19 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         _png_ident, _caixa_ident = _capturar_desafio(page)
         fingerprint = _fingerprint_desafio(page, _png_ident)
 
-        png_grid = _overlay_grid(png_raw)
-        print(f"    [captcha/imagem] Screenshot com grid: {len(png_grid) // 1024} KB")
+        # SEM malha. Medido em 09/09/2026 contra as amostras arquivadas, com
+        # as respostas marcadas na imagem para conferencia visual:
+        #
+        #     com malha 20x20   caiu na agua vazia entre duas pipas;  10-26s
+        #     pixel direto      caiu em cima da pipa certa;            2-5s
+        #
+        # A malha existia para dar ao modelo um vocabulario de posicao. Mas ela
+        # DESENHA linhas e numeros sobre uma imagem que ja e camuflagem
+        # deliberada — soma ruido ao problema, e este formato depende
+        # justamente de enxergar a FORMA das figuras.
+        #
+        # A grade 3x3 nao muda: la os tiles ja sao celulas de verdade.
+        print(f"    [captcha/imagem] Screenshot: {len(png_raw) // 1024} KB")
 
         try:
             # `rodizio` faz cada RODADA começar num modelo diferente. Sem ele,
@@ -3790,16 +3874,17 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             #
             # O mecanismo já existia e estava ligado nos outros resolvedores;
             # este ficou de fora.
-            result = _gemini_grid(png_grid, instrucao, api_key, politica,
-                                  rodizio=rnd - 1)
+            result = _gemini_pixel(png_raw, instrucao, api_key, politica,
+                                   rodizio=rnd - 1)
         except Exception as e:
             print(f"    [captcha/imagem] Gemini falhou | {_diagnostico_erro(e)}")
             continue
 
-        positions  = result.get("click_positions") or []
         confidence = result.get("confidence", "low")
         action     = result.get("action", "click")
-        print(f"    [captcha/imagem] action={action} | confidence={confidence} | {len(positions)} pontos")
+        tem_ponto  = result.get("x") is not None and result.get("y") is not None
+        print(f"    [captcha/imagem] action={action} | confidence={confidence} | "
+              f"{'1 ponto' if tem_ponto else 'sem ponto'}")
 
         if confidence == "low":
             print("    [captcha/imagem] Confiança baixa — retentando...")
@@ -3811,30 +3896,18 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             continue
 
         if action == "click":
-            if not positions:
-                print("    [captcha/imagem] Sem pontos — retentando...")
+            if not tem_ponto:
+                print("    [captcha/imagem] Sem ponto — retentando...")
                 continue
             # Clique por pixel sobre `area_bbox`, medida antes do modelo.
             if not _geometria_estavel(page, _caixa_ident):
                 print(f"    [captcha/imagem] {MSG_DESCARTE}")
                 continue
-            # O enunciado manda no NUMERO de cliques, nao o modelo.
-            #
-            # Medido em 08/09/2026: "clique na flor em que a abelha nunca
-            # pousa" e "clique na figura diferente" — os dois de resposta
-            # unica — vieram com 4 pontos cada. Clicar os quatro erra sempre:
-            # tres deles sao exatamente o que o enunciado exclui. O modelo
-            # listou os candidatos em vez de escolher, e o primeiro da lista
-            # nao e melhor que os outros, entao a lista inteira e suspeita.
-            #
-            # Retentar custa uma rodada; clicar errado queima a tentativa E
-            # troca o desafio, perdendo tambem o trabalho ja feito.
-            if _pede_um_clique_so(instrucao) and len(positions) > 1:
-                print(f"    [captcha/imagem] Enunciado pede UM clique e vieram "
-                      f"{len(positions)} pontos — o modelo listou candidatos em "
-                      f"vez de escolher. Retentando...")
-                continue
-            _click_grid_positions(page, positions, area_bbox)
+            # A guarda de "veio lista de candidatos" saiu daqui: o esquema
+            # `ESQUEMA_PIXEL` devolve UM ponto por construcao, entao a lista
+            # que ela recusava nao existe mais. O que ela protegia — clicar em
+            # tudo quando o enunciado pede um — virou impossivel de expressar.
+            _click_pixel(page, result, area_bbox, _dimensoes_png(png_raw))
         elif action == "type":
             txt = result.get("text_answer", "").strip()
             if txt:

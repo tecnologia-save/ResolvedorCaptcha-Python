@@ -599,23 +599,32 @@ def test_sem_enunciado_nao_afirma_clique_unico():
     assert solver._pede_um_clique_so(None) is False
 
 
-def test_clique_unico_nao_clica_lista_de_candidatos():
-    """Enunciado de resposta unica com varios pontos -> retenta, nao clica.
+def test_o_resolvedor_de_imagem_nao_TEM_como_clicar_varias_vezes():
+    """A guarda virou impossibilidade, e isso e melhor que a guarda.
 
-    Medido em 08/09/2026: "clique na flor em que a abelha nunca pousa" e
-    "por favor, clique na figura diferente" voltaram do modelo com 4 pontos
-    cada. Clicar os quatro erra por construcao — o enunciado EXCLUI tres deles.
-    Pegar o primeiro tambem nao serve: a lista e sintoma de o modelo ter
-    enumerado candidatos em vez de escolher, entao nenhum item dela vale mais
-    que os outros.
+    Em 08/09/2026 o modelo devolvia 4 pontos para "clique na figura diferente"
+    e a automacao clicava os quatro — erro por construcao, ja que o enunciado
+    EXCLUI tres deles. A correcao de entao foi recusar a lista e retentar.
+
+    Em 09/09/2026 a malha 20x20 saiu do caminho: medido contra as amostras
+    arquivadas, com as respostas marcadas na imagem, ela caia na agua vazia
+    entre duas figuras enquanto o pixel direto caia em cima da certa — e em um
+    terco do tempo. Com `ESQUEMA_PIXEL`, a resposta e UM ponto por construcao:
+    a lista que a guarda recusava nao existe mais para ser recusada.
+
+    Este teste afirma a propriedade nova. Se alguem devolver a malha para este
+    resolvedor, a lista volta a ser possivel e ele cai.
     """
+    assert "x" in solver.ESQUEMA_PIXEL["properties"]
+    assert "y" in solver.ESQUEMA_PIXEL["properties"]
+    assert "click_positions" not in solver.ESQUEMA_PIXEL["properties"], (
+        "voltou a aceitar lista de pontos")
+
     import inspect
     fonte = inspect.getsource(solver._solve_imagem)
-    pos_guarda = fonte.index("_pede_um_clique_so(instrucao)")
-    pos_clique = fonte.index("_click_grid_positions(page, positions")
-    assert pos_guarda < pos_clique, (
-        "a guarda de clique unico tem de rodar ANTES de clicar, senao "
-        "e so um log depois do estrago")
+    assert "_gemini_pixel" in fonte
+    assert "_overlay_grid" not in fonte, (
+        "a malha voltou para o formato em que ela foi medida perdendo")
 
 
 def test_a_decisao_por_enunciado_vem_antes_da_proporcao():

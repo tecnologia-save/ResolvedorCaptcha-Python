@@ -1214,6 +1214,15 @@ ORDEM_DO_SEGUNDO_PROVEDOR = {
     TIPO_IMAGEM:        0,   # astra primeiro: 3/3 no estatico
     TIPO_BOLA:          0,
     TIPO_CARTAO_ANIMAL: 0,
+    # O resolvedor de imagem chama `_gemini_grid`, cuja tag e "grid" e nao
+    # "imagem". Ele ja caia no astra, mas por DEFAULT — dava o resultado certo
+    # pelo motivo errado, e sumiria no dia em que o default mudasse. Entra
+    # explicito.
+    "grid":             0,
+    # A triagem descreve um desafio que a automacao NAO resolveu. E o caso mais
+    # dificil por definicao, e o unico cujo produto e uma explicacao em vez de
+    # um clique.
+    "triagem":          0,
 }
 
 

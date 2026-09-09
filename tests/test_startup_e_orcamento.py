@@ -273,6 +273,14 @@ def relogio(monkeypatch):
 
 
 def test_a_run_real_reproduzida_dois_timeouts_e_o_terceiro_responde(monkeypatch, relogio):
+    # Sem segundo provedor: este teste mede a CADEIA DO GEMINI.
+    #
+    # `_astra_configurado()` le `OPENAI_API_KEY` do ambiente, e a maquina de
+    # desenvolvimento tem uma. Sem isto a reserva de orcamento do segundo
+    # provedor liga aqui dentro, encurta a cadeia e o teste falha por um
+    # motivo que nao tem nada a ver com o que ele afirma — o resultado passa a
+    # depender de quem roda e de onde.
+    monkeypatch.setattr(solver, "_astra_configurado", lambda: False)
     """Com a politica rapida, os tres modelos cabem no orcamento.
 
     Cada timeout consome o teto individual (10 s), nao os 30 s do padrao.
@@ -303,6 +311,14 @@ def test_a_run_real_reproduzida_dois_timeouts_e_o_terceiro_responde(monkeypatch,
 
 
 def test_o_orcamento_esgotado_interrompe_a_cadeia(monkeypatch, relogio):
+    # Sem segundo provedor: este teste mede a CADEIA DO GEMINI.
+    #
+    # `_astra_configurado()` le `OPENAI_API_KEY` do ambiente, e a maquina de
+    # desenvolvimento tem uma. Sem isto a reserva de orcamento do segundo
+    # provedor liga aqui dentro, encurta a cadeia e o teste falha por um
+    # motivo que nao tem nada a ver com o que ele afirma — o resultado passa a
+    # depender de quem roda e de onde.
+    monkeypatch.setattr(solver, "_astra_configurado", lambda: False)
     """Nao adianta ir ao proximo modelo com o screenshot ja velho."""
     cliente, chamadas = _cliente(
         {m: TimeoutError("ReadTimeout") for m in solver.GEMINI_MODELS},

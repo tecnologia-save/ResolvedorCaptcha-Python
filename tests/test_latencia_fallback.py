@@ -453,13 +453,25 @@ def _com_openai(monkeypatch, resposta=None, explode=None):
     return chamadas
 
 
-def test_o_caminho_feliz_do_gemini_NAO_chama_o_segundo_provedor(monkeypatch):
-    """Se o Gemini responde, o segundo provedor nem existe."""
-    chamadas = _com_openai(monkeypatch)
-    cliente, _ = _cliente({solver.GEMINI_MODELS[0]: {"ok": 1}})
+def test_o_gemini_continua_na_cadeia_quando_o_primeiro_falha(monkeypatch):
+    """A ordem inverteu; ninguem saiu.
+
+    Este teste afirmava o contrario — "se o Gemini responde, o segundo provedor
+    nem existe" — e a razao era custo: nao pagar o provedor pago enquanto o
+    gratuito resolve. Em 09/09/2026 o Jean dispensou essa economia
+    explicitamente ("esquece custo, isso precisa estar assertivo"), depois de um
+    dia com 30 falhas do Gemini contra 2/2 respostas do astra.
+
+    O que continua valendo, e e o que se afirma aqui: quando o primeiro nao
+    fecha, o Gemini e tentado logo atras. Trocar de principal nao pode virar
+    perder a alternativa — foi ter UM provedor so que criou este problema.
+    """
+    chamadas = _com_openai(monkeypatch, explode=RuntimeError("astra fora"))
+    cliente, tentados = _cliente({solver.GEMINI_MODELS[0]: {"ok": 1}})
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
     assert solver._gemini_call([], {}, "k", "grade") == {"ok": 1}
-    assert chamadas["n"] == 0
+    assert chamadas["n"] == 1, "o segundo provedor tem de perguntar primeiro"
+    assert tentados, "e o Gemini tem de ser tentado quando ele falha"
 
 
 def test_as_duas_primeiras_rodadas_sao_do_gemini(monkeypatch):

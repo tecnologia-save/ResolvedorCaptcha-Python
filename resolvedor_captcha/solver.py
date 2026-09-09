@@ -1167,7 +1167,23 @@ CATEGORIAS_DE_PROVEDOR_FORA = frozenset({
 # Meu erro foi dividir isto em dois limites com base numa medicao de TRES
 # amostras da bola — um formato que nao e o que falha. Uma amostra pequena de um
 # caso irrelevante nao pode vetar o que a producao pede.
-RODIZIO_DO_SEGUNDO_PROVEDOR = 1
+# ZERO: o segundo provedor pergunta PRIMEIRO.
+#
+# Ele entrou como reserva, para a rodada 2 em diante, quando a suposicao era
+# que o Gemini resolveria a maioria e o outro cobriria a excecao. O dia
+# 09/09/2026 mediu o contrario:
+#
+#     Gemini   30 falhas    (14 + 10 + 6 nos tres modelos)
+#     astra     2 chamadas com prazo adequado  ->  2 respostas (6,9s e 17,0s)
+#
+# Nao e caso isolado: foram 504 DEADLINE_EXCEEDED e 503 "high demand" o dia
+# todo, nos tres modelos, e o astra so nao respondia quando chegava nele com o
+# troco do orcamento. Manter como reserva quem responde, e como principal quem
+# nao responde, custa o orcamento inteiro para descobrir todo dia a mesma coisa.
+#
+# O Gemini continua na cadeia, como alternativa: quando o astra falhar, ele e
+# tentado logo em seguida. Inverteu-se a ordem, nao se removeu ninguem.
+RODIZIO_DO_SEGUNDO_PROVEDOR = 0
 
 
 _AVISOU_SEM_SEGUNDO_PROVEDOR = False
@@ -1338,7 +1354,13 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     limite_segundo = (RODIZIO_DO_SEGUNDO_PROVEDOR
                       if rodizio_segundo_provedor is None
                       else rodizio_segundo_provedor)
-    if rodizio >= limite_segundo and ativos:
+    # `not politica.esgotado` aqui tambem, e nao so na cadeia esgotada la
+    # embaixo. Enquanto este ponto de entrada valia da 2a rodada em diante, o
+    # relogio ja tinha sido conferido no caminho; com o segundo provedor em
+    # PRIMEIRO, ele e a primeira coisa que roda, e sem esta guarda uma politica
+    # ja vencida ainda dispararia uma chamada. Orcamento estourado nao melhora
+    # trocando de provedor — piora, porque a tela envelhece mais.
+    if rodizio >= limite_segundo and ativos and not politica.esgotado:
         # Por que ele NAO foi chamado, quando nao foi.
         #
         # Em 08/09/2026 os arquivos de diagnostico mostravam so modelos Gemini,
@@ -1361,8 +1383,31 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
         ativos = ativos[giro:] + ativos[:giro]
+    # Reserva de orcamento para o segundo provedor.
+    #
+    # Medido em 09/09/2026: os tres modelos do Gemini devolveram 504
+    # DEADLINE_EXCEEDED, consumiram o orcamento inteiro, e o astra foi recusado
+    # com "restam 0.0s". Ele e o unico que respondeu hoje — 6,9s no `grade` e
+    # 17,0s no `grid` — e nao chegou a ser perguntado.
+    #
+    # Gastar ate a ultima gota no provedor que esta falhando, e so entao
+    # procurar alternativa, e a ordem errada: quanto pior o primeiro esta, mais
+    # caro fica descobrir isso, e menos sobra para quem poderia responder.
+    #
+    # A reserva vale APENAS quando ha segundo provedor configurado. Sem ele nao
+    # ha para quem guardar, e encurtar a cadeia do Gemini so tiraria tentativas
+    # sem dar nada em troca.
+    reserva_ms = (int(ASTRA_DEADLINE_MIN_S * 1000)
+                  if (_astra_configurado() and politica.fim is not None)
+                  else 0)
     provedor_fora = False
     for mi, model in enumerate(ativos):
+        if reserva_ms and politica.restante_ms < reserva_ms + GEMINI_DEADLINE_MIN_MS:
+            print(f"    [captcha/{tag}] parando a cadeia do Gemini com "
+                  f"{politica.restante_ms / 1000:.0f}s: o resto e reserva do "
+                  f"segundo provedor, que precisa de "
+                  f"{ASTRA_DEADLINE_MIN_S:.0f}s.")
+            break
         if provedor_fora:
             print(f"    [captcha/{tag}] '{model}' e os demais ficam de fora: "
                   f"a cota é da CHAVE, não do modelo. Indo direto ao segundo "

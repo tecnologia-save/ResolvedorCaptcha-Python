@@ -640,16 +640,25 @@ def test_a_decisao_por_enunciado_vem_antes_da_proporcao():
 
 
 
-def test_o_segundo_provedor_e_o_SEGUNDO_modelo():
-    """Pedido do Jean, e a insistencia dele estava certa.
+def test_o_segundo_provedor_pergunta_PRIMEIRO():
+    """Era o segundo modelo; em 09/09/2026 virou o primeiro.
 
-    Em producao o que NAO fecha e o formato ESTATICO, e nele o segundo provedor
-    mediu 3/3 contra as amostras arquivadas enquanto o Gemini nao fechava.
-    Segurar ate a 3a rodada adia o unico que acertou — e a 3a as vezes nem
-    chega: medido em 08/09/2026, a rodada 2 levou 39s por ReadTimeout e o
-    orcamento acabou antes.
+    O placar do dia decidiu, e nao a preferencia de ninguem:
+
+        Gemini   30 falhas  (14 + 10 + 6 nos tres modelos), o dia inteiro
+                            504 DEADLINE_EXCEEDED e 503 "high demand"
+        astra     2 chamadas com prazo adequado -> 2 respostas (6,9s e 17,0s)
+
+    Manter como reserva quem responde, e como principal quem nao responde,
+    gastava o orcamento inteiro para redescobrir isso a cada desafio — e o
+    substituto so era chamado com o troco, quando ainda era chamado.
+
+    O Gemini continua na cadeia logo atras: inverteu-se a ordem, nao se removeu
+    ninguem. E a decisao de custo que existia aqui — nao pagar o provedor pago
+    quando o gratuito resolve — foi dispensada explicitamente pelo Jean:
+    "esquece custo, isso precisa estar assertivo".
     """
-    assert solver.RODIZIO_DO_SEGUNDO_PROVEDOR == 1
+    assert solver.RODIZIO_DO_SEGUNDO_PROVEDOR == 0
 
 
 def test_todo_resolvedor_alcanca_o_segundo_provedor():

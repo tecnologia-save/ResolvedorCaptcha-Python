@@ -4286,9 +4286,25 @@ def _solve_bola(page, api_key: str, max_rounds: int = 2,
 # Estes valores sao ponto de partida derivado do que ja se mediu, e a linha de
 # log diz qual foi aplicado — para a proxima calibragem sair de numero, e nao
 # de palpite.
+# 09/09/2026, segunda calibragem do dia: a grade voltou de 12s para 25s.
+#
+# Eu tinha baixado para 12s de manha, para sobrar orcamento. Foi troca ruim, e
+# os arquivos mostram: dos 30 erros do Gemini no dia, 26 sao teto NOSSO —
+# 9 sao `504 DEADLINE_EXCEEDED`, que e o servidor dizendo que o prazo QUE NOS
+# DEMOS expirou, e 12 sao `ReadTimeout`, que e o nosso cliente desistindo. So
+# 4 sao `503 high demand`, o unico que e de fato indisponibilidade dele.
+#
+# Os 504 da grade se concentraram DEPOIS da reducao: cinco entre 15:01 e 15:45,
+# contra dois na manha inteira com 20s. Economizar prazo criou o erro que a
+# economia deveria evitar, e cada falha custa a rodada inteira — muito mais
+# caro que os segundos poupados.
+#
+# 25s da folga sobre os 20s que ja produziam 504 ocasional. E agora da para ser
+# generoso: com o astra cobrindo a grade como reserva, uma demora do Gemini
+# nao custa mais o desafio.
 TETO_POR_TIPO_MS = {
-    TIPO_GRADE:         12_000,
-    TIPO_GRADE_FUSED:   12_000,
+    TIPO_GRADE:         25_000,
+    TIPO_GRADE_FUSED:   25_000,
     TIPO_IMAGEM:        30_000,
     TIPO_BOLA:          30_000,
     TIPO_CARTAO_ANIMAL: 30_000,

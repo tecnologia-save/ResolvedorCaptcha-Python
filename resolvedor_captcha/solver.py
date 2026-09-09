@@ -1090,6 +1090,20 @@ OPENAI_MODEL_PADRAO = "gpt-6-astra"
 # chamada de visao com imagem de ~450 KB nao cabe em 10s.
 ASTRA_TIMEOUT_MIN_S = 30.0
 
+# Abaixo disto a chamada ao segundo provedor nao se faz.
+#
+# Medido em 09/09/2026: com teto de 30s ele respondeu em 6,9s. Nas onze
+# chamadas seguintes o orcamento ja estava no fim e o teto caiu para 1,0s —
+# porque eu escrevi `max(1.0, min(teto, restante))`, que FABRICA uma chamada
+# impossivel em vez de recusar. Onze idas ao servidor com um segundo de prazo,
+# todas condenadas antes de sair.
+#
+# E o mesmo principio do `GEMINI_DEADLINE_MIN_MS`: se o prazo nao permite a
+# resposta, a chamada nao e uma tentativa, e desperdicio com aparencia de
+# tentativa — e ainda polui o diagnostico com timeouts que nao dizem nada sobre
+# o provedor.
+ASTRA_DEADLINE_MIN_S = 10.0
+
 # O Gemini RECUSA prazo abaixo disto, com 400 INVALID_ARGUMENT:
 #     "Manually set deadline 2s is too short. Minimum allowed deadline is 10s."
 #
@@ -1275,7 +1289,12 @@ def _astra_call(contents: list, schema: dict, tag: str,
     restante_s = politica.restante_ms / 1000 if politica.fim is not None else None
     teto_s = max(politica.timeout_efetivo_ms() / 1000, ASTRA_TIMEOUT_MIN_S)
     if restante_s is not None:
-        teto_s = max(1.0, min(teto_s, restante_s))
+        if restante_s < ASTRA_DEADLINE_MIN_S:
+            raise RuntimeError(
+                f"segundo provedor não chamado: restam {restante_s:.1f}s e o "
+                f"mínimo viável é {ASTRA_DEADLINE_MIN_S:.0f}s "
+                f"(medido: responde em ~7s quando tem prazo)")
+        teto_s = min(teto_s, restante_s)
     cliente = OpenAI(api_key=chave, base_url=base,
                      timeout=teto_s, max_retries=0)
     print(f"    [captcha/{tag}] Gemini não fechou — perguntando ao segundo "

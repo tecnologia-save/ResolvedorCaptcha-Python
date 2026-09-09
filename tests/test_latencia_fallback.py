@@ -660,3 +660,28 @@ def test_cota_estourada_para_a_cadeia_mas_503_e_timeout_nao():
     assert "limite_de_uso" in solver.CATEGORIAS_DE_PROVEDOR_FORA
     assert "indisponivel" not in solver.CATEGORIAS_DE_PROVEDOR_FORA
     assert "tempo_esgotado" not in solver.CATEGORIAS_DE_PROVEDOR_FORA
+
+
+def test_astra_recusa_chamada_sem_prazo_viavel():
+    """Onze chamadas de 1 segundo, medidas em 09/09/2026.
+
+    O rastro da run mostrou o padrao inteiro:
+
+        14:59:41  teto=30.0s  ->  RESPONDEU em 6,9s
+        15:01:43  teto=1.1s   ->  timeout
+        15:01:46  teto=1.0s   ->  timeout   (mais nove iguais)
+
+    A culpa era de `max(1.0, min(teto, restante))`: com o orcamento zerado ele
+    FABRICAVA um teto de 1s em vez de recusar. Cada uma dessas idas gastou
+    tempo, envelheceu o desafio e entrou no diagnostico como `APITimeoutError`
+    — sugerindo problema de rede onde havia prazo impossivel.
+
+    Prazo que nao permite resposta nao e tentativa; e desperdicio com aparencia
+    de tentativa.
+    """
+    assert solver.ASTRA_DEADLINE_MIN_S >= 8.0
+    import inspect
+    fonte = inspect.getsource(solver._astra_call)
+    assert "max(1.0" not in fonte, (
+        "o piso artificial voltou — ele transforma orcamento esgotado em "
+        "chamada condenada")

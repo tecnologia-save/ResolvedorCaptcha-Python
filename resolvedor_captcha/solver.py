@@ -1189,6 +1189,47 @@ RODIZIO_DO_SEGUNDO_PROVEDOR = 0
 _AVISOU_SEM_SEGUNDO_PROVEDOR = False
 
 
+# Quem pergunta PRIMEIRO, por tipo de desafio.
+#
+# Inverter tudo de uma vez foi erro meu, e a run das 16:36 de 09/09/2026 cobrou:
+# quinze rodadas de `grade`, quinze respostas do astra em 3,5-6,1s, e nenhuma
+# fechou o captcha. O orcamento acabou e o desafio foi para triagem.
+#
+# A medicao que ja existia neste arquivo dizia isso, e eu passei por cima:
+#
+#     grade 3x3    Gemini 16/16 medido       astra NUNCA medido
+#     imagem/bola  Gemini nao fechava        astra 3/3 nas amostras arquivadas
+#
+# Sao formatos diferentes. Na grade o modelo escolhe entre 9 tiles com um
+# rotulo textual — trabalho que o Gemini faz bem e barato. No estatico e na
+# animacao ele precisa localizar um alvo num fundo desenhado para atrapalhar
+# visao computacional, e ali quem acerta e o outro.
+#
+# Quem responde primeiro deve ser quem ACERTA naquele formato, e nao quem
+# respondeu mais rapido no formato ao lado. Velocidade sem acerto so gasta o
+# orcamento mais depressa — foi exatamente o que aconteceu.
+ORDEM_DO_SEGUNDO_PROVEDOR = {
+    TIPO_GRADE:         2,   # Gemini primeiro: 16/16 medido aqui
+    TIPO_GRADE_FUSED:   2,
+    TIPO_IMAGEM:        0,   # astra primeiro: 3/3 no estatico
+    TIPO_BOLA:          0,
+    TIPO_CARTAO_ANIMAL: 0,
+}
+
+
+def _rodizio_do_segundo_provedor(tag: str) -> int:
+    """A partir de que rodada o segundo provedor entra, para este desafio.
+
+    `tag` e o nome do resolvedor que esta chamando (`grade`, `imagem`, `bola`,
+    `grid`...). Desconhecido cai no padrao, que continua sendo perguntar cedo:
+    formato novo e justamente onde o Gemini menos costuma fechar.
+    """
+    for tipo, ordem in ORDEM_DO_SEGUNDO_PROVEDOR.items():
+        if tag.startswith(tipo) or tipo.startswith(tag):
+            return ordem
+    return RODIZIO_DO_SEGUNDO_PROVEDOR
+
+
 def _astra_configurado() -> bool:
     """Ha segundo provedor? E se NAO ha, isso aparece no log.
 
@@ -1351,7 +1392,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # Esgotado o rodizio, a proxima rodada repetiria um modelo ja ouvido com a
     # mesma imagem — resposta identica garantida. E o espaco onde o segundo
     # provedor cabe sem tirar o lugar de ninguem.
-    limite_segundo = (RODIZIO_DO_SEGUNDO_PROVEDOR
+    limite_segundo = (_rodizio_do_segundo_provedor(tag)
                       if rodizio_segundo_provedor is None
                       else rodizio_segundo_provedor)
     # `not politica.esgotado` aqui tambem, e nao so na cadeia esgotada la

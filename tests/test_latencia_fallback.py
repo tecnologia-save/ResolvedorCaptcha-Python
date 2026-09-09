@@ -469,7 +469,11 @@ def test_o_gemini_continua_na_cadeia_quando_o_primeiro_falha(monkeypatch):
     chamadas = _com_openai(monkeypatch, explode=RuntimeError("astra fora"))
     cliente, tentados = _cliente({solver.GEMINI_MODELS[0]: {"ok": 1}})
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
-    assert solver._gemini_call([], {}, "k", "grade") == {"ok": 1}
+    # `imagem`, e nao `grade`: desde 09/09/2026 a ordem depende do TIPO, e na
+    # grade quem pergunta primeiro e o Gemini (16/16 medido nela). O que este
+    # teste afirma — o outro provedor entra quando o primeiro falha — vale para
+    # os dois sentidos; aqui se exercita o lado em que o astra abre.
+    assert solver._gemini_call([], {}, "k", "imagem") == {"ok": 1}
     assert chamadas["n"] == 1, "o segundo provedor tem de perguntar primeiro"
     assert tentados, "e o Gemini tem de ser tentado quando ele falha"
 
@@ -490,14 +494,35 @@ def test_as_duas_primeiras_rodadas_sao_do_gemini(monkeypatch):
     assert chamadas["n"] == 0, "o segundo provedor entrou cedo demais"
 
 
-def test_a_terceira_rodada_ja_e_do_segundo_provedor(monkeypatch):
+def test_a_rodada_do_segundo_provedor_depende_do_TIPO(monkeypatch):
+    """Na grade o Gemini abre; no estatico e na animacao, o astra.
+
+    Antes de 09/09/2026 havia um numero so para todos os formatos, e isso
+    custou uma run: com o astra promovido a primeiro em tudo, a grade levou
+    quinze rodadas — quinze respostas em 3,5-6,1s, nenhuma fechando o captcha —
+    ate o orcamento acabar.
+
+    A medicao que ja existia no proprio arquivo dizia o que fazer:
+
+        grade 3x3    Gemini 16/16 medido      astra nunca medido
+        imagem/bola  Gemini nao fechava       astra 3/3 nas amostras
+
+    Sao trabalhos diferentes. Na grade se escolhe entre 9 tiles por um rotulo
+    textual; no estatico se localiza um alvo num fundo desenhado para atrapalhar
+    visao computacional. Quem pergunta primeiro tem de ser quem ACERTA naquele
+    formato — velocidade sem acerto so gasta o orcamento mais depressa.
+    """
     chamadas = _com_openai(monkeypatch, resposta={"ok": "astra"})
     cliente, _ = _cliente({m: {"ok": 1} for m in solver.GEMINI_MODELS})
     monkeypatch.setattr(solver, "_get_client", lambda _k: cliente)
-    r = solver._gemini_call([], {}, "k", "grade",
-                            rodizio=solver.RODIZIO_DO_SEGUNDO_PROVEDOR)
-    assert r == {"ok": "astra"}
-    assert chamadas["n"] == 1
+
+    # Grade: rodada 1 e do Gemini.
+    assert solver._gemini_call([], {}, "k", "grade") == {"ok": 1}
+    assert chamadas["n"] == 0, "na grade o Gemini abre — 16/16 medido nela"
+
+    # Estatico: rodada 1 e do astra.
+    assert solver._gemini_call([], {}, "k", "imagem") == {"ok": "astra"}
+    assert chamadas["n"] == 1, "no estatico o astra abre — 3/3 medido nele"
 
 
 

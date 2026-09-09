@@ -1187,6 +1187,31 @@ def _contents_para_openai(contents: list, schema: dict) -> list:
     return blocos
 
 
+def _tracar_astra(linha: str) -> None:
+    """Uma linha por chamada ao segundo provedor, em arquivo local.
+
+    O `print` acima ja vai para o log da run, e o agente nao corta linha
+    nenhuma — mas "cade o astra?" foi perguntado seis vezes em dois dias, e
+    todas as respostas dependiam de alguem abrir a timeline da plataforma e
+    ler. Sucesso nao deixava rastro nenhum em disco: so falha gravava arquivo,
+    entao "funcionou" e "nem foi chamado" eram indistinguiveis daqui.
+
+    Vai para o MESMO diretorio de diagnostico dos erros, que ja e local, ja e
+    opcional e ja fica fora do que sobe para a plataforma.
+    """
+    destino = os.environ.get("CAPTCHA_DEBUG_ERRO_DIR", "").strip()
+    if not destino:
+        return
+    try:
+        os.makedirs(destino, exist_ok=True)
+        with open(os.path.join(destino, "astra-chamadas.log"), "a",
+                  encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+                    f"pid={os.getpid()} {linha}" + chr(10))
+    except Exception:  # noqa: BLE001 — diagnostico nunca derruba a run
+        pass
+
+
 def _astra_call(contents: list, schema: dict, tag: str,
                 politica: PoliticaLatencia | None = None) -> dict:
     """Uma chamada ao segundo provedor. Levanta como qualquer outra falha."""
@@ -1212,15 +1237,18 @@ def _astra_call(contents: list, schema: dict, tag: str,
                      timeout=teto_s, max_retries=0)
     print(f"    [captcha/{tag}] Gemini não fechou — perguntando ao segundo "
           f"provedor.")
+    _tracar_astra(f"CHAMANDO tag={tag} modelo={modelo} teto={teto_s:.1f}s")
     # Sem `temperature`: este modelo recusa 0 ("Only the default (1) value is
     # supported") e responder com o padrao e o que o torna util aqui — duas
     # perguntas iguais podem dar respostas diferentes.
+    _t0 = time.monotonic()
     resp = cliente.chat.completions.create(
         model=modelo,
         messages=[{"role": "user",
                    "content": _contents_para_openai(contents, schema)}],
         response_format={"type": "json_object"},
     )
+    _tracar_astra(f"RESPONDEU tag={tag} em {time.monotonic() - _t0:.1f}s")
     return _json.loads(resp.choices[0].message.content)
 
 

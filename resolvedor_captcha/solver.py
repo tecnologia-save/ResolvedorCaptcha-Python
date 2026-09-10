@@ -20,6 +20,7 @@ import io
 import json
 import os
 import re
+import random
 import time
 from itertools import pairwise
 from typing import NamedTuple, Optional
@@ -2779,10 +2780,17 @@ def _click_grade_tiles(page, indices: list[int]) -> None:
         return
     cf = _get_challenge_frame_locator(page)
     tasks = cf.locator(TASK_SEL)
-    for idx in sorted(set(indices)):
+    # Ordem embaralhada, intervalo variavel, `delay` variavel.
+    #
+    # `sorted()` clicava sempre em ordem crescente de indice, com 30ms fixos e
+    # 50ms de pausa: tres constantes numa sequencia que um humano nunca
+    # produz. A ordem em que alguem marca os quadrados nao e a ordem do DOM.
+    alvos = list(set(indices))
+    random.shuffle(alvos)
+    for idx in alvos:
         try:
-            tasks.nth(idx).click(delay=30)
-            time.sleep(0.05)
+            tasks.nth(idx).click(delay=random.randint(40, 110))
+            time.sleep(random.uniform(0.18, 0.55))
             print(f"    [captcha] Tile {idx} clicado.")
         except Exception as e:
             print(f"    [captcha] Erro ao clicar tile {idx}: {type(e).__name__}")
@@ -2913,6 +2921,37 @@ def _dimensoes_png(png: bytes) -> tuple[int, int]:
         return im.size
 
 
+def _aproximar_do_alvo(page, x: float, y: float) -> None:
+    """Leva o ponteiro ate (x, y) por uma TRAJETORIA, e nao por um salto.
+
+    `page.mouse.click(x, y)` emite um unico `mousemove` ja no destino: o
+    ponteiro nunca esteve em outro lugar. Nenhum humano produz isso, e a
+    sequencia de eventos e exatamente o que os antibot amostram.
+
+    `_mover_cursor_suave`, que ja existia e continua sendo chamado, mexe no
+    cursor do SISTEMA por `user32`. A pagina nao ve o cursor do sistema — ela
+    ve os eventos que o Playwright injeta. Sao coisas diferentes, e so esta
+    aqui chega ate ela.
+
+    Duas etapas de proposito: um ponto intermediario deslocado do alvo e
+    depois a aproximacao final. Movimento humano tem correcao de rota; reta
+    perfeita ate o pixel exato tambem e assinatura.
+
+    Nao levanta: se a movimentacao falhar, o clique de quem chama continua
+    valendo — isto e disfarce, nao funcionalidade.
+    """
+    try:
+        desvio_x = random.uniform(-70, 70)
+        desvio_y = random.uniform(-55, 55)
+        page.mouse.move(x + desvio_x, y + desvio_y,
+                        steps=random.randint(12, 22))
+        page.wait_for_timeout(random.randint(40, 130))
+        page.mouse.move(x, y, steps=random.randint(5, 11))
+        page.wait_for_timeout(random.randint(30, 90))
+    except Exception:  # noqa: BLE001
+        pass
+
+
 def _click_pixel(page, ponto: dict, bbox: dict, tamanho: tuple[int, int]) -> None:
     """Converte pixel-da-imagem em pixel-do-viewport e clica.
 
@@ -2927,8 +2966,10 @@ def _click_pixel(page, ponto: dict, bbox: dict, tamanho: tuple[int, int]) -> Non
     x = bbox["x"] + fx * bbox["width"]
     y = bbox["y"] + fy * bbox["height"]
     _mover_cursor_suave(1)
+    _aproximar_do_alvo(page, x, y)
     try:
-        page.mouse.click(x, y)
+        # `delay` entre pressionar e soltar: clique humano nao e instantaneo.
+        page.mouse.click(x, y, delay=random.randint(45, 120))
         print(f"    [captcha] Pixel ({ponto['x']},{ponto['y']}) -> ({x:.0f},{y:.0f}) "
               f"| {ponto.get('description', '')}")
     except Exception as e:  # noqa: BLE001
@@ -2997,7 +3038,43 @@ def _submit_captcha(page) -> bool:
     page.wait_for_timeout(300)
     print("    [captcha] Submetendo desafio...")
 
-    # 1. JavaScript direto no frame real
+    # 1. CLIQUE REAL no frame — era a estrategia 2, e nunca era alcancada.
+    #
+    # O JavaScript vinha primeiro e sempre vencia, entao todo submit da
+    # producao saia como `btn.click()` disparado por `evaluate`. Um clique
+    # sintetico de JS chega na pagina sem `isTrusted`, sem mousedown/mouseup,
+    # sem coordenada e sem o mousemove que o antecede — e o hCaptcha amostra
+    # exatamente esses eventos. O log dizia isso em toda submissao:
+    #
+    #     [captcha] Submit via JS/frame real.
+    #
+    # A estrategia de clique real ja existia e ja funcionava; so estava atras
+    # na fila. Inverter nao adiciona risco: o JS continua logo abaixo, como
+    # rede, para o caso de o botao nao ser clicavel pelo locator.
+    try:
+        frame = _get_challenge_frame(page)
+        if frame:
+            for sel in SUBMIT_SELS + ['[role="button"][title*="ximo"]']:
+                try:
+                    alvo = frame.locator(sel).first
+                    try:
+                        caixa = alvo.bounding_box()
+                        if caixa:
+                            _aproximar_do_alvo(
+                                page,
+                                caixa["x"] + caixa["width"] / 2,
+                                caixa["y"] + caixa["height"] / 2)
+                    except Exception:  # noqa: BLE001 — disfarce nao derruba
+                        pass
+                    alvo.click(timeout=2_000, delay=random.randint(45, 120))
+                    print(f"    [captcha] Submit via clique real ({sel}).")
+                    return True
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    # 2. JavaScript no frame real — rede de seguranca, nao o caminho normal.
     try:
         frame = _get_challenge_frame(page)
         if frame:
@@ -3011,22 +3088,8 @@ def _submit_captcha(page) -> bool:
                 return false;
             }""")
             if ok:
-                print("    [captcha] Submit via JS/frame real.")
+                print("    [captcha] Submit via JS/frame real (fallback).")
                 return True
-    except Exception:
-        pass
-
-    # 2. Frame real + locator Playwright
-    try:
-        frame = _get_challenge_frame(page)
-        if frame:
-            for sel in SUBMIT_SELS + ['[role="button"][title*="ximo"]']:
-                try:
-                    frame.locator(sel).first.click(timeout=2_000)
-                    print(f"    [captcha] Submit via frame.locator({sel}).")
-                    return True
-                except Exception:
-                    continue
     except Exception:
         pass
 

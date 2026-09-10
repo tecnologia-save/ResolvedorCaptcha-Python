@@ -116,8 +116,20 @@ def test_todos_indisponiveis_levanta(monkeypatch):
 # ── Clique nos tiles ─────────────────────────────────────────────────────────
 
 def test_clica_os_tiles_pedidos_uma_vez_cada(page, captcha):
+    """Uma vez cada — a ORDEM deixou de ser fixa de propósito.
+
+    Este teste comparava a sequência exata `[0, 4, 8]`, que era a ordem
+    crescente de índice. Ela nunca foi requisito: o que ele guarda, e o nome
+    diz, é que cada tile pedido é clicado uma única vez.
+
+    Desde 10/09/2026 a ordem é embaralhada — clicar sempre na ordem do DOM é
+    uma das constantes que denunciam automação. Comparar sequência aqui
+    passaria a reprovar o comportamento correto.
+    """
     solver._click_grade_tiles(page, [4, 0, 4, 8])
-    assert [idx for _d, idx in captcha.tiles_clicados] == [0, 4, 8]
+    clicados = [idx for _d, idx in captcha.tiles_clicados]
+    assert sorted(clicados) == [0, 4, 8]
+    assert len(clicados) == len(set(clicados)), "nenhum tile clicado duas vezes"
 
 
 def test_lista_vazia_nao_clica(page, captcha):
@@ -140,7 +152,10 @@ def test_solve_grade_clica_e_submete_quando_o_desafio_nao_muda(
     gemini["resposta"] = {"task_summary": "onibus", "matching_tiles": [1, 3],
                           "confidence": "high"}
     solver._solve_grade(page, "chave-de-teste", max_rounds=1)
-    assert [idx for _d, idx in captcha.tiles_clicados] == [1, 3]
+    # `sorted`: a ordem de clique é embaralhada. Com dois tiles este assert
+    # passava metade das vezes — teste que falha em uma execução a cada duas
+    # é pior que teste nenhum, porque ensina a ignorar o vermelho.
+    assert sorted(idx for _d, idx in captcha.tiles_clicados) == [1, 3]
     assert captcha.submits >= 1
     # E clicou no desafio CERTO — o mesmo objeto que gerou a captura.
     assert all(d is captcha.desafio for d, _i in captcha.tiles_clicados)

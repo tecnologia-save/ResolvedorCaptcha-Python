@@ -85,7 +85,12 @@ def test_c_desafio_identico_clica_normalmente(page, captcha, gemini):
     gemini["resposta"] = {"task_summary": "onibus", "matching_tiles": [2, 5],
                           "confidence": "high"}
     solver._solve_grade(page, "chave-de-teste", max_rounds=1)
-    assert [i for _d, i in captcha.tiles_clicados] == [2, 5]
+    # `sorted`: desde 10/09/2026 a ordem de clique é embaralhada, porque
+    # clicar sempre na ordem do DOM é uma das constantes que denunciam
+    # automação. O que este teste guarda é OUTRA coisa — que os cliques caem
+    # no desafio ainda vigente, e não num que já foi trocado. A ordem nunca
+    # fez parte disso; comparar sequência aqui só produzia vermelho aleatório.
+    assert sorted(i for _d, i in captcha.tiles_clicados) == [2, 5]
     assert all(d is captcha.desafio for d, _i in captcha.tiles_clicados)
     assert captcha.submits >= 1
 

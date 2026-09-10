@@ -3193,6 +3193,82 @@ def _click_checkbox_widget(page, timeout_ms: int = 10_000) -> bool:
 # Polling pós-submit
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Onde o acervo rotulado e gravado. Vazio desliga, como o despejo de erro.
+#
+# Fora do diretorio de artefatos da run de proposito: e material de treino da
+# maquina que investiga, nao entrega da automacao.
+LICOES_DIR_ENV = "CAPTCHA_LICOES_DIR"
+
+VEREDITO_ACEITO = "aceito"          # o desafio sumiu: resposta certa, confirmada
+VEREDITO_AVANCOU = "avancou"        # mudou de desafio: quase certamente certa
+VEREDITO_RECUSADO = "recusado"      # mesmo desafio na tela: errada
+
+
+def _registrar_licao(png: bytes, instrucao: str, tipo: str,
+                     resposta, veredito: str) -> None:
+    """Guarda (imagem, enunciado, resposta, veredito do PORTAL).
+
+    O gabarito sempre existiu e era jogado fora. Quem decide se a resposta
+    estava certa e o proprio portal — `_wait_for_resolve` ja sabia disso, e o
+    valor era usado so para decidir se o laco continuava.
+
+    O que se guardava ate 10/09/2026 era o oposto do util: `_guardar_amostra`
+    roda quando o solver DESISTE, entao o acervo tinha 81 imagens de fracasso e
+    nenhum acerto. Aprender so com erro ensina o que nao fazer, sem ensinar o
+    que fazer.
+
+    Com isto o acervo passa a crescer sozinho, rotulado, a cada run — e vira
+    material para exemplos no prompt (few-shot) da mesma familia.
+    """
+    destino = os.environ.get(LICOES_DIR_ENV, "").strip()
+    if not destino or not png:
+        return
+    try:
+        pasta = os.path.join(destino, veredito)
+        os.makedirs(pasta, exist_ok=True)
+        base = f"{time.strftime('%Y%m%d-%H%M%S')}-{tipo}-{os.getpid()}"
+        with open(os.path.join(pasta, base + ".png"), "wb") as f:
+            f.write(png)
+        with open(os.path.join(pasta, base + ".json"), "w", encoding="utf-8") as f:
+            json.dump({
+                "tipo": tipo,
+                "instrucao": _limpar_texto(instrucao),
+                "resposta": resposta,
+                "veredito": veredito,
+                "quando": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }, f, ensure_ascii=False, indent=2)
+    except Exception:  # noqa: BLE001 — acervo nunca derruba a run
+        pass
+
+
+def _veredito_do_portal(page, fingerprint_antes: str | None,
+                        png_antes: bytes | None, timeout_ms: int) -> tuple[bool, str]:
+    """(resolveu, veredito) — e o veredito NAO e binario, de proposito.
+
+    O hCaptcha da DUAS rodadas por desafio. Uma rodada 1 respondida CERTO faz
+    aparecer a rodada 2, e o desafio continua visivel: `_wait_for_resolve`
+    devolve False. Rotular isso como erro ensinaria o acervo ao contrario —
+    marcaria como errada exatamente a resposta que funcionou.
+
+    O que separa os dois casos e se o desafio MUDOU, e `_desafio_ainda_e_o_mesmo`
+    ja existe para isso (a guarda de frescor). Dai os tres estados:
+
+        sumiu                -> aceito     (certeza)
+        continua, mas outro  -> avancou    (quase certamente certa)
+        continua, o mesmo    -> recusado   (errada)
+
+    `avancou` fica separado de `aceito` porque nao e a mesma evidencia, e quem
+    for usar o acervo precisa poder escolher o quao exigente quer ser.
+    """
+    if _wait_for_resolve(page, timeout_ms=timeout_ms):
+        return True, VEREDITO_ACEITO
+    try:
+        mesmo = _desafio_ainda_e_o_mesmo(page, fingerprint_antes, png_antes)
+    except Exception:  # noqa: BLE001 — sem prova de mudanca, assume o mesmo
+        mesmo = True
+    return False, VEREDITO_RECUSADO if mesmo else VEREDITO_AVANCOU
+
+
 def _wait_for_resolve(page, timeout_ms: int = 3_000) -> bool:
     """Polling até o challenge desaparecer ou timeout.
 
@@ -3669,7 +3745,14 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
         _submit_captcha(page)
 
         # Polling até 3s (100ms/check) — mais preciso que sleep fixo de 1.5s
-        if _wait_for_resolve(page, timeout_ms=3_000):
+        resolveu, veredito = _veredito_do_portal(page, fingerprint, png, 3_000)
+        # `task_summary` no lugar do enunciado: e o criterio que o modelo
+        # ENTENDEU, e para agrupar familias no acervo ele serve melhor que o
+        # texto cru — alem de o enunciado ja estar visivel no cabecalho da
+        # propria imagem que vai junto.
+        _registrar_licao(png, str(result.get("task_summary") or ""),
+                         TIPO_GRADE, valid_tiles, veredito)
+        if resolveu:
             print("    [captcha/grade] Captcha resolvido!")
             return True
 
@@ -3834,7 +3917,10 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         time.sleep(0.1)
         _submit_captcha(page)
 
-        if _wait_for_resolve(page, timeout_ms=3_000):
+        resolveu, veredito = _veredito_do_portal(page, fingerprint, iframe_png, 3_000)
+        _registrar_licao(iframe_png, str(result.get("task_summary") or ""),
+                         TIPO_GRADE_FUSED, valid_tiles, veredito)
+        if resolveu:
             print("    [captcha/grade_fused] Captcha resolvido!")
             return True
 
@@ -3937,7 +4023,13 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         time.sleep(0.2)
         _submit_captcha(page)
 
-        if _wait_for_resolve(page, timeout_ms=3_000):
+        resolveu, veredito = _veredito_do_portal(page, fingerprint, _png_ident, 3_000)
+        # A imagem gravada e a que FOI AO MODELO (`png_raw`), nao a de
+        # identidade: o acervo precisa do que ele viu para servir de exemplo,
+        # e `_png_ident` existe so para comparar frescor.
+        _registrar_licao(png_raw, instrucao, TIPO_IMAGEM,
+                         {"x": result.get("x"), "y": result.get("y")}, veredito)
+        if resolveu:
             print("    [captcha/imagem] Captcha resolvido!")
             return True
 

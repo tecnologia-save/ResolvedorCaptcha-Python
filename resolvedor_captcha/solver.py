@@ -319,6 +319,17 @@ TIPO B — Enunciado por categoria com imagem de referencia (ex.: "Selecione a i
   → Determine a CATEGORIA AMPLA desse objeto conforme a tabela abaixo.
   → NUNCA limite ao objeto exato — inclua todos da mesma categoria.
 
+TIPO C — Enunciado RELACIONAL com imagem de referencia (ex.: "Selecione os itens
+que cabem dentro dele", "que sao maiores que ele", "que combinam com ele"):
+  → O enunciado aponta para a referencia com um pronome ("dele", "dela", "nele")
+    ou com "mostrado acima". Identifique o objeto da referencia primeiro.
+  → O criterio NAO e categoria: e a RELACAO que o proprio enunciado descreve.
+    Leia a relacao literalmente e aplique-a a cada tile.
+  → Categoria aqui atrapalha: numa mala cabem sapato e livro, que nao sao da
+    mesma categoria entre si nem da mala. Julgue a relacao, nao o parentesco.
+  → NAO amplie o criterio. Ampliar e o certo no TIPO B e o ERRADO aqui: incluir
+    "de perto" um item que nao cumpre a relacao e simplesmente errar o tile.
+
 === TABELA DE CATEGORIAS (use para TIPO B) ===
   aviao, helicoptero, foguete, drone     → "veiculos aereos / transportes"
   carro, trem, onibus, caminhao, barco   → "veiculos terrestres ou aquaticos / transportes"
@@ -337,13 +348,18 @@ Examine os tiles 0 a 8 um por um. Para cada tile:
 
 === REGRAS CRITICAS — NUNCA IGNORE ===
   !! Retornar lista VAZIA [] e QUASE SEMPRE ERRADO — o hCaptcha sempre tem pelo menos 2 tiles corretos.
-  !! Se voce retornou [] nas tentativas anteriores, AMPLIE a categoria e seja mais generoso.
-  !! Se a referencia e um aviao e a grade tem trens e onibus → INCLUA (todos sao transportes).
   !! Tipicamente de 2 a 5 tiles correspondem ao criterio em cada rodada.
   !! Retornar todos os 9 tiles tambem esta errado.
 
+  As duas regras abaixo valem SO para o TIPO B. Elas mandam ampliar, e ampliar
+  e correto quando o criterio e pertencer a uma categoria — mas destrutivo
+  quando o criterio e uma relacao (TIPO C): "cabe dentro dele" nao fica mais
+  verdadeiro por generosidade, so mais errado.
+  !! (TIPO B) Se voce retornou [] nas tentativas anteriores, AMPLIE a categoria e seja mais generoso.
+  !! (TIPO B) Se a referencia e um aviao e a grade tem trens e onibus → INCLUA (todos sao transportes).
+
 === RETORNE ===
-  task_summary: criterio identificado de forma clara (para TIPO B: use a categoria ampla, ex.: "transportes / veiculos")
+  task_summary: criterio identificado de forma clara (TIPO B: a categoria ampla, ex.: "transportes / veiculos"; TIPO C: a relacao e a referencia, ex.: "cabe dentro da mala")
   matching_tiles: lista de indices 0-8 (NUNCA retorne lista vazia sem antes ampliar a categoria)
   confidence: "high" | "medium" | "low"
 """

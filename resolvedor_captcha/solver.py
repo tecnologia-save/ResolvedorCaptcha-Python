@@ -150,8 +150,23 @@ GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (tr
 # dele era outro — podia valer sozinho e consumir o orcamento inteiro —, e quem
 # resolve isso e `timeout_efetivo_ms(preservar_retentativa=True)`.
 #
-# O dado que mais pesa nessa medicao nem e a latencia: foram 76 FALHAS para 38
-# sucessos. Teto e afinacao; a taxa de falha e o problema.
+# A primeira leitura dessa medicao foi ERRADA, e vale registrar: eu contei 76
+# falhas para 38 sucessos e conclui que a taxa de falha era o problema.
+# Classificando as falhas por causa (`ferramentas/medir_falhas.py`):
+#
+#     57%  nossa (propagada): cadeia sem orcamento
+#     20%  nossa: sem orcamento para o 2o provedor
+#     10%  provedor: ReadTimeout
+#      9%  provedor: HTTP 503
+#      4%  provedor: outros
+#
+# 77% nunca chegaram a sair. Falha de infra de verdade sao 16 em 9 runs — menos
+# de 2 por run, contra 38 sucessos.
+#
+# O provedor nao esta quebrado. O que existe e uma cascata: uma chamada lenta
+# come o orcamento, e dali em diante toda tentativa nasce impossivel e e
+# contabilizada como falha. Foi isso que fez o numero parecer catastrofico, e e
+# exatamente o que `preservar_retentativa` ataca.
 #
 # O que os numeros mostram e que a latencia varia enormemente no MESMO modelo,
 # minuto a minuto: 1,2s numa chamada e 504 DEADLINE_EXCEEDED aos 29,1s na

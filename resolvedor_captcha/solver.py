@@ -1119,6 +1119,26 @@ ASTRA_TIMEOUT_MIN_S = 30.0
 # resposta, a chamada nao e uma tentativa, e desperdicio com aparencia de
 # tentativa — e ainda polui o diagnostico com timeouts que nao dizem nada sobre
 # o provedor.
+class SegundoProvedorSemOrcamento(RuntimeError):
+    """O segundo provedor NAO foi chamado: nao havia tempo viavel.
+
+    Nao e falha do provedor, e a distincao importa. No log as duas saiam
+    identicas — `segundo provedor tambem falhou | categoria=desconhecido |
+    tipo=RuntimeError` —, porque `_diagnostico_erro` nunca imprime o texto do
+    erro (regra de privacidade, e ela esta certa). A frase "nao chamado" ficava
+    invisivel.
+
+    Medido em 11/09/2026, RUN-ef3f4b9d, PREMIUM TEXTIL: doze "falhas" seguidas
+    do segundo provedor, todas assim. O captcha era "Clique em todos os objetos
+    feitos principalmente de metal", com dois baldes obvios — nada tinha a ver
+    com dificuldade. A run concluiu "exige validacao manual" e mandou uma
+    pessoa resolver um desafio trivial.
+
+    As duas pedem acoes opostas: provedor quebrado se investiga na chave e na
+    API; sem orcamento se resolve dando mais tempo ou parando antes.
+    """
+
+
 ASTRA_DEADLINE_MIN_S = 10.0
 
 # O Gemini RECUSA prazo abaixo disto, com 400 INVALID_ARGUMENT:
@@ -1373,7 +1393,7 @@ def _astra_call(contents: list, schema: dict, tag: str,
     teto_s = max(politica.timeout_efetivo_ms() / 1000, ASTRA_TIMEOUT_MIN_S)
     if restante_s is not None:
         if restante_s < ASTRA_DEADLINE_MIN_S:
-            raise RuntimeError(
+            raise SegundoProvedorSemOrcamento(
                 f"segundo provedor não chamado: restam {restante_s:.1f}s e o "
                 f"mínimo viável é {ASTRA_DEADLINE_MIN_S:.0f}s "
                 f"(medido: responde em ~7s quando tem prazo)")
@@ -1573,6 +1593,18 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     if _astra_configurado() and not politica.esgotado:
         try:
             return _astra_call(contents, schema, tag, politica)
+        except SegundoProvedorSemOrcamento:
+            # Nao e falha: e a guarda de viabilidade recusando uma chamada que
+            # ja nasceria condenada.
+            #
+            # A mensagem e montada AQUI, dos numeros que a gente calcula, e nao
+            # interpolando a excecao. O gate de higiene de logs proibe o
+            # segundo, e com razao: texto de excecao pode carregar conteudo do
+            # provedor, e abrir excecao para "esta aqui e nossa" e como a regra
+            # morre. Quem precisa saber e o restante em segundos, que temos.
+            print(f"    [captcha/{tag}] segundo provedor NAO chamado: "
+                  f"restam {politica.restante_ms / 1000:.1f}s e o minimo "
+                  f"viavel e {ASTRA_DEADLINE_MIN_S:.0f}s. Nao e falha dele.")
         except Exception as e:  # noqa: BLE001
             print(f"    [captcha/{tag}] segundo provedor também falhou | "
                   f"{_diagnostico_erro(e)}")
@@ -3790,6 +3822,22 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
             break
 
         if not valid_tiles:
+            # Orcamento zerado nao rende outra rodada — e cada uma que insiste
+            # CONTA como tentativa frustrada.
+            #
+            # Medido em 11/09/2026, RUN-ef3f4b9d: da rodada 3 em diante toda
+            # chamada ja tinha 0s. As rodadas 3, 4 e 5 foram encenacao —
+            # screenshot, "0s", erro, repete —, quinze chamadas que nao tinham
+            # como funcionar. E o desfecho delas fez o fluxo concluir que o
+            # captcha nao era automatizavel, quando o enunciado era "clique em
+            # todos os objetos feitos principalmente de metal", com dois baldes
+            # obvios na grade.
+            #
+            # Parar aqui nao perde nada: sem tempo nao ha chamada possivel.
+            if politica is not None and politica.esgotado:
+                print(f"    [captcha/grade] Rodada {rnd}: orcamento esgotado — "
+                      "nao ha tempo para outra rodada.")
+                break
             print(f"    [captcha/grade] Rodada {rnd}: sem tiles válidos. Continuando...")
             continue
 
@@ -3942,6 +3990,22 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             break
 
         if not valid_tiles:
+            # Orcamento zerado nao rende outra rodada — e cada uma que insiste
+            # CONTA como tentativa frustrada.
+            #
+            # Medido em 11/09/2026, RUN-ef3f4b9d: da rodada 3 em diante toda
+            # chamada ja tinha 0s. As rodadas 3, 4 e 5 foram encenacao —
+            # screenshot, "0s", erro, repete —, quinze chamadas que nao tinham
+            # como funcionar. E o desfecho delas fez o fluxo concluir que o
+            # captcha nao era automatizavel, quando o enunciado era "clique em
+            # todos os objetos feitos principalmente de metal", com dois baldes
+            # obvios na grade.
+            #
+            # Parar aqui nao perde nada: sem tempo nao ha chamada possivel.
+            if politica is not None and politica.esgotado:
+                print(f"    [captcha/grade_fused] Rodada {rnd}: orcamento esgotado — "
+                      "nao ha tempo para outra rodada.")
+                break
             print(f"    [captcha/grade_fused] Rodada {rnd}: sem tiles válidos. Continuando...")
             continue
 

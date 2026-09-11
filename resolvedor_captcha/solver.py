@@ -130,6 +130,25 @@ GRID_ROWS              = 20
 MAX_GEMINI_TRIES       = 3
 GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (troca rápido)
 
+# Quantos MODELOS do Gemini tentar antes de ir ao segundo provedor.
+#
+# Um. Insistir no provedor que acabou de falhar e a ordem errada, e o custo nao
+# e teorico. Medido em 11/09/2026, LEONARDO VIEIRA RESTAURANTE:
+#
+#     'gemini-3.5-flash'      descansa 1min (ReadTimeout)
+#     'gemini-3.1-flash-lite' descansa 1min (ReadTimeout)
+#     segundo provedor NAO chamado: restam 9.2s e o minimo viavel e 10s
+#
+# O astra foi recusado por OITO DECIMOS DE SEGUNDO. Os dois modelos do Gemini
+# consumiram o orcamento disputando entre si, e quem podia responder nao foi
+# perguntado. A empresa terminou como "exige validacao manual".
+#
+# A rotacao entre modelos do Gemini continua existindo — ela so deixa de vir
+# ANTES da alternativa de verdade. Quando nao ha segundo provedor configurado,
+# nada muda: ai a rotacao e tudo o que existe, e encurtar so tiraria tentativa
+# sem dar nada em troca.
+MODELOS_GEMINI_ANTES_DO_SEGUNDO = 1
+
 # Teto por TENTATIVA de chamada ao modelo, em milissegundos.
 #
 # 20s, medido em 26/08/2026 contra a API real. Era 30s, e cada falha custava os
@@ -732,7 +751,7 @@ class PoliticaLatencia(NamedTuple):
         return self.fim is not None and self.restante_ms <= 0
 
     def timeout_efetivo_ms(self, preservar_retentativa: bool = False,
-                           piso_ms: int = 0) -> int:
+                           piso_ms: int = 0, reserva_ms: int = 0) -> int:
         """O teto real desta request: nunca além do que sobra do orçamento.
 
         Com `preservar_retentativa`, também nunca além da METADE do que sobra —
@@ -768,7 +787,12 @@ class PoliticaLatencia(NamedTuple):
         """
         if self.fim is None:
             return self.timeout_ms
-        teto = min(self.timeout_ms, self.restante_ms)
+        # `reserva_ms` e o que fica guardado para OUTRO provedor. Sai do teto
+        # desta chamada, senao ela gasta para dentro da reserva e a guarda que
+        # decide continuar a cadeia chega tarde.
+        disponivel = self.restante_ms - reserva_ms if reserva_ms else self.restante_ms
+        teto = min(self.timeout_ms, max(piso_ms, disponivel)
+                   if reserva_ms else self.restante_ms)
         if preservar_retentativa:
             # A fração NUNCA empurra abaixo do piso de quem vai ser chamado.
             #
@@ -1568,6 +1592,14 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                   else 0)
     provedor_fora = False
     for mi, model in enumerate(ativos):
+        # Depois do primeiro modelo falhar, a alternativa de verdade e o OUTRO
+        # PROVEDOR — nao o proximo modelo do mesmo. Ver
+        # `MODELOS_GEMINI_ANTES_DO_SEGUNDO`.
+        if reserva_ms and mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO:
+            print(f"    [captcha/{tag}] {mi} modelo(s) do Gemini falharam — "
+                  f"indo ao segundo provedor em vez de tentar o proximo "
+                  f"(restam {politica.restante_ms / 1000:.0f}s).")
+            break
         if reserva_ms and politica.restante_ms < reserva_ms + GEMINI_DEADLINE_MIN_MS:
             print(f"    [captcha/{tag}] parando a cadeia do Gemini com "
                   f"{politica.restante_ms / 1000:.0f}s: o resto e reserva do "
@@ -1603,12 +1635,21 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                         # chance real — último modelo, última tentativa, e sem
                         # segundo provedor para quem guardar. Aí gastar tudo é
                         # o certo: não há próxima para proteger.
+                        # A reserva do segundo provedor sai do teto DESTA
+                        # chamada, e nao so da decisao de continuar a cadeia.
+                        #
+                        # O guard de reserva roda uma vez por MODELO; dentro de
+                        # cada um cabem duas tentativas, e elas gastavam para
+                        # dentro da reserva. Foi assim que o astra chegou a ser
+                        # recusado com 9,2s quando precisa de 10 — a decisao de
+                        # parar estava certa e tarde.
                         timeout_ms=politica.timeout_efetivo_ms(
                             preservar_retentativa=not (
                                 mi == len(ativos) - 1
                                 and attempt == GEMINI_TRIES_PER_MODEL
                                 and not _astra_configurado()),
-                            piso_ms=GEMINI_DEADLINE_MIN_MS),
+                            piso_ms=GEMINI_DEADLINE_MIN_MS,
+                            reserva_ms=reserva_ms),
                         sem_opcionais=sem_opcionais),
                 )
                 if sem_opcionais:

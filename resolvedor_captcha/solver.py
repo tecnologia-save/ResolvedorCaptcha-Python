@@ -1087,10 +1087,47 @@ def modelos_ativos() -> list[str]:
     return [min(GEMINI_MODELS, key=_voltar_em)]
 
 
-def _penalizar(model: str, motivo: str) -> None:
-    """Manda o modelo para o banco por um tempo crescente."""
+# Falha que ESGOTOU O TEMPO comeca no segundo degrau, e nao no primeiro.
+#
+# As duas falhas nao custam o mesmo. Um 503 volta em ~1s: reinsistir nele no
+# proximo captcha e barato, e 1min de descanso e proporcional. Um ReadTimeout
+# custa o TETO INTEIRO da chamada — e o teto de quem vai primeiro, que e a
+# maior fatia do orcamento.
+#
+# Medido em 11/09/2026, RUN-9634657b, BACUTIA COMERCIAL:
+#
+#     19:40:08  'gemini-3.5-flash-lite' descansa 1min (1a falha: ReadTimeout)
+#     19:40:12  segundo provedor resolveu  (astra salvou esta)
+#     19:42:25  novo captcha, flash-lite ja voltou do descanso e joga primeiro
+#     19:42:52  falha na chamada | gemini-3.5-flash-lite | ReadTimeout
+#     19:43:16  solver nao resolveu — empresa para validacao manual
+#
+# 21 dos 55s do orcamento foram para um modelo que tinha acabado de pendurar
+# uma chamada. O que sobrou nao coube em ninguem, e o `gemini-3.5-flash` —
+# 16/16 a 2,7s, sem nenhuma falha na execucao inteira — nunca foi perguntado.
+#
+# 1min e curto demais para timeout porque o ciclo do consumidor e mais longo
+# que isso: uma empresa leva ~8min, entao o modelo volta SEMPRE a tempo de
+# pegar o proximo captcha. 5min pula uma empresa, que e o ponto.
+#
+# Nao e banimento: a ficha continua zerando no primeiro acerto (`_premiar`), e
+# a lista tem alternativa medida e equivalente. O custo de errar para este lado
+# e uma chamada 0,5s mais lenta; para o outro lado, e a empresa.
+CATEGORIA_CARA = "tempo_esgotado"
+DEGRAU_FALHA_CARA = 2
+
+
+def _penalizar(model: str, motivo: str, categoria: str | None = None) -> None:
+    """Manda o modelo para o banco por um tempo crescente.
+
+    `categoria` vem de `_categoria_do_erro`. Ver `CATEGORIA_CARA`: quem estourou
+    o tempo nao volta no primeiro degrau, porque reinsistir nele custa o teto
+    inteiro da chamada seguinte.
+    """
     falhas = _BANCO.get(model, [0, 0.0])[0] + 1
-    descanso = _DESCANSOS[min(falhas, len(_DESCANSOS)) - 1]
+    degrau = (max(falhas, DEGRAU_FALHA_CARA) if categoria == CATEGORIA_CARA
+              else falhas)
+    descanso = _DESCANSOS[min(degrau, len(_DESCANSOS)) - 1]
     _BANCO[model] = [falhas, time.monotonic() + descanso]
     restantes = [m for m in GEMINI_MODELS if m != model and _pode_jogar(m)]
     print(f"    [captcha] '{model}' descansa {descanso / 60:.0f}min "
@@ -1829,7 +1866,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # Caiu por DISPONIBILIDADE: e do POOL, nao da chamada. Vai para o
         # banco por um tempo — insistir nele no proximo captcha custaria o
         # timeout inteiro de novo, e bani-lo de vez esvazia a bancada.
-        _penalizar(model, _diagnostico_erro(last_exc, model))
+        _penalizar(model, _diagnostico_erro(last_exc, model),
+                   categoria=_categoria_do_erro(last_exc))
         if mi < len(ativos) - 1:
             print(f"    [captcha/{tag}] '{model}' indisponível — tentando modelo alternativo...")
     # CADEIA ESGOTADA: o segundo provedor e a ultima chance antes de desistir.

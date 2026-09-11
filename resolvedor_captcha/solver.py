@@ -1582,7 +1582,27 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # Com `temperature=0.0` o Gemini tende a repetir a propria resposta; a
     # rotacao de modelo atenua, mas quem muda de verdade e trocar de PROVEDOR.
     if direto_ao_segundo and _astra_configurado():
-        return _astra_call(contents, schema, tag, _politica(politica))
+        # A recusa por orcamento e tratada AQUI, como no caminho normal.
+        #
+        # Sem este `except` ela escapava como excecao qualquer e o chamador a
+        # registrava como "Gemini erro (tentativa 2)" — culpando o provedor
+        # errado e ainda disparando "voltando ao Gemini". Medido em
+        # 11/09/2026, RUN-910bd939:
+        #
+        #     tiles vazios — indo ao segundo provedor (tentativa 1)...
+        #     Gemini erro (tentativa 2) | tipo=SegundoProvedorSemOrcamento
+        #
+        # Nao ha para onde cair: o Gemini nesse ponto ja falhou, e a decisao de
+        # vir para ca foi justamente por isso. Entao a recusa sobe com o tipo
+        # dela, e quem espera a resposta sabe que foi falta de tempo.
+        try:
+            return _astra_call(contents, schema, tag, _politica(politica))
+        except SegundoProvedorSemOrcamento:
+            _p = _politica(politica)
+            print(f"    [captcha/{tag}] segundo provedor NAO chamado: "
+                  f"restam {_p.restante_ms / 1000:.1f}s e o minimo viavel e "
+                  f"{ASTRA_DEADLINE_MIN_S:.0f}s. Nao e falha dele.")
+            raise
 
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
@@ -3995,9 +4015,19 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
             # obvios na grade.
             #
             # Parar aqui nao perde nada: sem tempo nao ha chamada possivel.
-            if politica is not None and politica.esgotado:
-                print(f"    [captcha/grade] Rodada {rnd}: orcamento esgotado — "
-                      "nao ha tempo para outra rodada.")
+            # VIAVEL, e nao apenas "maior que zero".
+            #
+            # `esgotado` so e verdade em 0ms. Com 2,9s no relogio a rodada
+            # seguinte roda inteira — screenshot, chamada, erro — para um
+            # orcamento que nenhum provedor aceita: o Gemini recusa abaixo de
+            # 10s e o astra tambem. Medido na RUN-910bd939, onde as rodadas
+            # continuaram girando com 2,9s.
+            if politica is not None and (
+                    politica.esgotado
+                    or 0 <= politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
+                print(f"    [captcha/grade] Rodada {rnd}: restam "
+                      f"{max(0, politica.restante_ms) / 1000:.1f}s — nenhum "
+                      "provedor aceita prazo tao curto. Encerrando.")
                 break
             print(f"    [captcha/grade] Rodada {rnd}: sem tiles válidos. Continuando...")
             continue
@@ -4163,9 +4193,19 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             # obvios na grade.
             #
             # Parar aqui nao perde nada: sem tempo nao ha chamada possivel.
-            if politica is not None and politica.esgotado:
-                print(f"    [captcha/grade_fused] Rodada {rnd}: orcamento esgotado — "
-                      "nao ha tempo para outra rodada.")
+            # VIAVEL, e nao apenas "maior que zero".
+            #
+            # `esgotado` so e verdade em 0ms. Com 2,9s no relogio a rodada
+            # seguinte roda inteira — screenshot, chamada, erro — para um
+            # orcamento que nenhum provedor aceita: o Gemini recusa abaixo de
+            # 10s e o astra tambem. Medido na RUN-910bd939, onde as rodadas
+            # continuaram girando com 2,9s.
+            if politica is not None and (
+                    politica.esgotado
+                    or 0 <= politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
+                print(f"    [captcha/grade_fused] Rodada {rnd}: restam "
+                      f"{max(0, politica.restante_ms) / 1000:.1f}s — nenhum "
+                      "provedor aceita prazo tao curto. Encerrando.")
                 break
             print(f"    [captcha/grade_fused] Rodada {rnd}: sem tiles válidos. Continuando...")
             continue

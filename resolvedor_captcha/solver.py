@@ -1642,6 +1642,32 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     #
     # Com `temperature=0.0` o Gemini tende a repetir a propria resposta; a
     # rotacao de modelo atenua, mas quem muda de verdade e trocar de PROVEDOR.
+    # TODOS os modelos de castigo? Vai direto ao segundo provedor.
+    #
+    # `modelos_ativos()` nunca devolve lista vazia: com todos descansando ele
+    # entrega o que volta primeiro, para uma tentativa lenta ser melhor que
+    # nenhuma. Isso vale quando NAO ha alternativa — mas havendo, pagar o teto
+    # para redescobrir que o provedor esta fora e desperdicio puro.
+    #
+    # Medido em 11/09/2026, RUN-2c68037a:
+    #
+    #     14:51:40  Tiles recortados
+    #     14:52:06  falha gemini-3.5-flash-lite | ServerError   (26s)
+    #     14:52:11  astra respondeu | high | tiles=[1]          ( 5s)
+    #
+    # Vinte e seis segundos para falhar, cinco para responder. O banco de
+    # reservas JA sabia que o modelo estava de castigo — a informacao existia
+    # e nao era usada para escolher o caminho.
+    #
+    # Isto nao inverte a ordem: quando o Gemini esta saudavel ele continua
+    # primeiro na grade, onde tem 16/16 medido. So deixa de ser perguntado
+    # quando ele acabou de dizer que nao esta.
+    if (not direto_ao_segundo and _astra_configurado()
+            and not any(_pode_jogar(m) for m in GEMINI_MODELS)):
+        print(f"    [captcha/{tag}] todos os modelos do Gemini de castigo — "
+              "indo direto ao segundo provedor em vez de pagar o teto.")
+        direto_ao_segundo = True
+
     if direto_ao_segundo and _astra_configurado():
         # A recusa por orcamento e tratada AQUI, como no caminho normal.
         #
@@ -4213,15 +4239,44 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         # ── 4. Gemini ─────────────────────────────────────────────────────────
         valid_tiles: list[int] = []
         result = None
+        # O enunciado vai junto do recorte: sem ele `_gemini_pixel` nao sabe o
+        # que procurar, porque o recorte nao contem o cabecalho.
+        instrucao_fused = _extrair_instrucao(page)
 
         for attempt in range(1, MAX_GEMINI_TRIES + 1):
             if not _challenge_visible(page):
                 return _sumiu("grade_fused", marca_submissoes, "antes do Gemini")
 
             try:
-                if tiles_png:
-                    # Envia iframe completo + recorte com overlay → prompt especializado
-                    result = _gemini_grade_fused(iframe_png, tiles_png, api_key, politica)
+                # Só pede PIXEL quando dá para CLICAR nele: a conversão do
+                # pixel do recorte para o viewport precisa do bbox. Sem ele,
+                # pedir um ponto produziria uma resposta inclicável — e o
+                # caminho antigo, por índice, continua sendo o certo ali.
+                if tiles_png and grid_page_bbox:
+                    # PIXEL, e nao indice de celula numa malha 3x3.
+                    #
+                    # O painel fundido NAO e uma grade: as figuras ficam
+                    # espalhadas em posicoes livres. Desenhar uma malha por
+                    # cima e converter o indice no CENTRO DA CELULA faz o
+                    # clique cair em espaco vazio — capturado em print pelo
+                    # Jean tres vezes em 11/09/2026, sempre com o modelo
+                    # ACERTANDO o objeto ("mascara de soldagem | high") e o
+                    # clique caindo ao lado dele.
+                    #
+                    # A mesma licao ja estava medida neste arquivo, na familia
+                    # `imagem`, e eu nao a apliquei aqui:
+                    #
+                    #     com malha 20x20  caiu na agua vazia entre duas pipas
+                    #     pixel direto     caiu em cima da pipa certa, 2-5s
+                    #
+                    # `_gemini_pixel` pergunta o CENTRO da figura em pixels do
+                    # recorte, e `_click_pixel` converte para o viewport com o
+                    # bbox — o mesmo par que resolve a familia `imagem`.
+                    ponto = _gemini_pixel(tiles_png, instrucao_fused, api_key,
+                                          politica, rodizio=attempt - 1)
+                    result = {"ponto": ponto,
+                              "task_summary": ponto.get("description", ""),
+                              "confidence": ponto.get("confidence", "high")}
                 else:
                     # Fallback: só o iframe, prompt genérico de grade
                     ref_img = _get_reference_image_bytes(page)
@@ -4232,16 +4287,22 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                 time.sleep(1)
                 continue
 
+            # A resposta pode vir como PONTO (caminho por pixel) ou como
+            # indices de tile (fallback sem recorte). Ter uma das duas basta —
+            # exigir `valid_tiles` descartaria toda resposta por pixel.
             valid_tiles = sorted({i for i in result.get("matching_tiles", []) if 0 <= i <= 8})
-            if result.get("confidence") == "low" or not valid_tiles:
-                motivo = "confiança baixa" if result.get("confidence") == "low" else "tiles vazios"
-                print(f"    [captcha/grade_fused] {motivo} — retentando Gemini (tentativa {attempt})...")
+            ponto_ok = (result.get("ponto") or {}).get("x") is not None
+            if result.get("confidence") == "low" or not (valid_tiles or ponto_ok):
+                motivo = ("confiança baixa" if result.get("confidence") == "low"
+                          else "sem ponto nem tiles")
+                print(f"    [captcha/grade_fused] {motivo} — indo ao segundo "
+                      f"provedor (tentativa {attempt})...")
                 result, valid_tiles = None, []
                 time.sleep(1)
                 continue
             break
 
-        if not valid_tiles:
+        if not (valid_tiles or (result or {}).get("ponto")):
             # Orcamento zerado nao rende outra rodada — e cada uma que insiste
             # CONTA como tentativa frustrada.
             #
@@ -4297,10 +4358,27 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             except Exception:
                 pass
 
-        if task_count >= 9:
+        ponto = (result or {}).get("ponto")
+        if ponto and grid_page_bbox:
+            # Pixel do RECORTE -> pixel do viewport, via bbox do recorte.
+            # `_click_pixel` ja faz a conversao por fracao, o que protege de
+            # devicePixelRatio diferente entre screenshot e pagina.
+            # Tamanho do recorte: do PNG, com o bbox como rede.
+            #
+            # `_click_pixel` converte por FRACAO (pixel/lado), entao ele
+            # precisa do lado da imagem que o modelo VIU. Decodificar e o
+            # jeito exato; se falhar, o bbox e a melhor aproximacao — e errar
+            # a escala e melhor do que nao clicar.
+            try:
+                from PIL import Image as _Img
+                _lado = _Img.open(io.BytesIO(tiles_png)).size
+            except Exception:  # noqa: BLE001
+                _lado = (int(grid_page_bbox["width"]), int(grid_page_bbox["height"]))
+            _click_pixel(page, ponto, grid_page_bbox, _lado)
+        elif task_count >= 9:
             _click_grade_tiles(page, valid_tiles)
         else:
-            # Passa a grid_page_bbox do recorte para clicks precisos
+            # Caminho antigo: so quando NAO ha ponto (fallback sem recorte).
             _click_fused_grade_tiles(page, valid_tiles, grid_page_bbox)
 
         time.sleep(0.1)

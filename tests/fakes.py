@@ -208,10 +208,15 @@ class FakeMouse:
     def __init__(self, captcha):
         self.captcha = captcha
 
-    def click(self, x, y):
+    def click(self, x, y, delay=None, button=None, click_count=None):
+        # A assinatura espelha a do Playwright. Sem `delay` aqui, a cadência
+        # humana adicionada em 10/09/2026 fazia o dublê levantar TypeError —
+        # que `_click_pixel` engole e transforma em "Erro ao clicar pixel".
+        # O teste via zero cliques e acusava a lógica, quando o que faltava
+        # era o dublê acompanhar a interface.
         self.captcha.cliques_pixel.append((self.captcha.desafio, x, y))
 
-    def move(self, x, y):
+    def move(self, x, y, steps=None):
         pass
 
 

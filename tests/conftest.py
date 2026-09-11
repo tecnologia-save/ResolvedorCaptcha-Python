@@ -81,6 +81,22 @@ def gemini(monkeypatch):
             raise resposta
         return resposta
 
+    def falso_pixel(*a, **k):
+        """O `grade_fused` passou a pedir PIXEL, nao indice de celula.
+
+        A fixture devolve um ponto derivado do `matching_tiles` que o teste
+        configurou, para os testes existentes continuarem expressando a mesma
+        intencao ("o modelo apontou algo") sem precisarem saber do formato.
+        """
+        if estado["ao_chamar"]:
+            estado["ao_chamar"]()
+        resposta = estado["resposta"]
+        if isinstance(resposta, BaseException):
+            raise resposta
+        return {"x": 100, "y": 100, "confidence": resposta.get("confidence", "high"),
+                "description": resposta.get("task_summary", "")}
+
     monkeypatch.setattr(solver, "_gemini_grade", falso)
     monkeypatch.setattr(solver, "_gemini_grade_fused", falso)
+    monkeypatch.setattr(solver, "_gemini_pixel", falso_pixel)
     return estado

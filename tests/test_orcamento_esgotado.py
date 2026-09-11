@@ -48,9 +48,14 @@ def test_orcamento_esgotado_encerra_as_rodadas():
     enunciado era "clique em todos os objetos feitos principalmente de metal",
     com dois baldes óbvios na grade.
     """
-    for fn in (solver._solve_grade, solver._solve_grade_fused):
+    # A guarda do `grade_fused` passou a aceitar PONTO além de tiles, então o
+    # texto que a delimita mudou. O que o teste garante continua o mesmo: entre
+    # "não tenho resposta" e "vou continuar" existe uma saída por orçamento.
+    for fn, marca in ((solver._solve_grade, "if not valid_tiles:"),
+                      (solver._solve_grade_fused,
+                       'if not (valid_tiles or (result or {}).get("ponto")):')):
         fonte = inspect.getsource(fn)
-        i = fonte.index("if not valid_tiles:")
+        i = fonte.index(marca)
         j = fonte.index("Continuando...", i)
         trecho = fonte[i:j]
         assert "politica.esgotado" in trecho, fn.__name__

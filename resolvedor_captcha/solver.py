@@ -700,11 +700,59 @@ class PoliticaLatencia(NamedTuple):
     def esgotado(self) -> bool:
         return self.fim is not None and self.restante_ms <= 0
 
-    def timeout_efetivo_ms(self) -> int:
-        """O teto real desta request: nunca além do que sobra do orçamento."""
+    def timeout_efetivo_ms(self, preservar_retentativa: bool = False,
+                           piso_ms: int = 0) -> int:
+        """O teto real desta request: nunca além do que sobra do orçamento.
+
+        Com `preservar_retentativa`, também nunca além da METADE do que sobra —
+        nenhuma tentativa pode consumir a chance da próxima.
+
+        Essa segunda regra nasceu da RUN-ef3f4b9d, 11/09/2026. A PREMIUM TEXTIL
+        caiu num captcha trivial ("clique em todos os objetos feitos
+        principalmente de metal", dois baldes óbvios) e terminou marcada como
+        "exige validação manual". A causa, em três linhas de log:
+
+            Teto por chamada ajustado ao tipo: 10s -> 40s (grade)
+            falha na chamada | gemini-3.5-flash-lite | ReadTimeout
+            parando a cadeia do Gemini com 12s
+
+        Orçamento de 55s, teto de 40s para grade. Uma requisição que ficou
+        pendurada levou os 40 — e os 12 que sobraram não cabem em ninguém: o
+        mínimo viável são 10s para o Gemini e 10s para o segundo provedor. O
+        rodízio de modelos funcionou, o alternativo foi acionado, e herdou um
+        orçamento impossível.
+
+        Nada disso tinha a ver com dificuldade: nenhum modelo chegou a ver a
+        imagem.
+
+        Metade, e não um valor fixo: com 55s de orçamento o primeiro tiro vale
+        27,5s, que ainda é folgado sobre os 19,8s da pior chamada BOA já
+        medida (ver o comentário de `GEMINI_TIMEOUT_MS`). Um teto fixo menor
+        cortaria chamadas boas — foi o erro de 12s, corrigido em 26/08 — e um
+        fixo maior repetiria este caso. A fração se ajusta ao orçamento de cada
+        consumidor sem precisar de tabela.
+
+        Na ÚLTIMA tentativa possível não se reserva nada: aí gastar tudo é o
+        certo, porque não há próxima para proteger.
+        """
         if self.fim is None:
             return self.timeout_ms
-        return max(1, min(self.timeout_ms, self.restante_ms))
+        teto = min(self.timeout_ms, self.restante_ms)
+        if preservar_retentativa:
+            # A fração NUNCA empurra abaixo do piso de quem vai ser chamado.
+            #
+            # Sem isto a reserva fabrica exatamente o que veio eliminar. Um
+            # teste que já existia — a run real reproduzida, orçamento 30s e
+            # teto de 10s — mostrou a terceira chamada caindo para 5s, abaixo
+            # dos 10s que a API do Gemini exige ("Manually set deadline 5s is
+            # too short"). Guardar para a próxima tentativa não pode custar a
+            # viabilidade DESTA.
+            #
+            # Quando não cabem os dois, a preferência é a tentativa de agora:
+            # ela tem uma imagem fresca na mão, e a próxima ainda pode nem
+            # acontecer.
+            teto = max(min(teto, self.restante_ms // 2), min(teto, piso_ms))
+        return max(1, teto)
 
 
 POLITICA_PADRAO = PoliticaLatencia()
@@ -1518,9 +1566,19 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                 resp = client.models.generate_content(
                     model=model,
                     contents=contents,
-                    config=_make_config(schema, model,
-                                        timeout_ms=politica.timeout_efetivo_ms(),
-                                        sem_opcionais=sem_opcionais),
+                    config=_make_config(
+                        schema, model,
+                        # Preserva metade do que sobra, EXCETO na última
+                        # chance real — último modelo, última tentativa, e sem
+                        # segundo provedor para quem guardar. Aí gastar tudo é
+                        # o certo: não há próxima para proteger.
+                        timeout_ms=politica.timeout_efetivo_ms(
+                            preservar_retentativa=not (
+                                mi == len(ativos) - 1
+                                and attempt == GEMINI_TRIES_PER_MODEL
+                                and not _astra_configurado()),
+                            piso_ms=GEMINI_DEADLINE_MIN_MS),
+                        sem_opcionais=sem_opcionais),
                 )
                 if sem_opcionais:
                     print(f"    [captcha/{tag}] Respondeu SEM os campos "

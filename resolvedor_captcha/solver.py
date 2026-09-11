@@ -1475,6 +1475,42 @@ def _tracar_astra(linha: str) -> None:
         pass
 
 
+# Frases com que o segundo provedor RECUSA a tarefa.
+#
+# Ele responde no schema, com `matching_tiles` vazio e a recusa no
+# `task_summary` — campo que existia e nunca era lido. No log isso saia como
+# "tiles vazios", que e o diagnostico OPOSTO: um diz que o modelo nao
+# conseguiu, o outro que ele nao quis.
+#
+# Medido em 11/09/2026 sobre o acervo, 12 grades ACEITAS pelo portal:
+#
+#     exatos  9/12 (75%)   vazios 3/12 (25%)   errados 0/12
+#
+# Quando responde, acerta exato — nove de nove. O unico problema e a recusa.
+# E ela NAO e deterministica: na mesma imagem, t1 e t2 recusaram e t3
+# respondeu certo. Por isso insistir resolve, e nao mudar de provedor.
+_MARCAS_RECUSA_SEGUNDO = (
+    "não posso resolver captcha", "nao posso resolver captcha",
+    "não posso ajudar", "nao posso ajudar",
+    "can't help with", "cannot help with",
+    "i'm not able to", "unable to assist",
+)
+
+# Quantas vezes repergunta quando ele RECUSA (nao quando erra).
+#
+# Duas repeticoes cobriram o pior caso observado: a amostra que recusou em t1 e
+# t2 respondeu em t3. Cada ida custa uma chamada; sem orcamento, para antes.
+TENTATIVAS_CONTRA_RECUSA = 3
+
+
+def _e_recusa_do_segundo(resposta: dict) -> bool:
+    """A resposta veio vazia PORQUE o modelo se recusou?"""
+    if resposta.get("matching_tiles") or resposta.get("action"):
+        return False
+    resumo = str(resposta.get("task_summary") or "").lower()
+    return any(m in resumo for m in _MARCAS_RECUSA_SEGUNDO)
+
+
 def _astra_call(contents: list, schema: dict, tag: str,
                 politica: PoliticaLatencia | None = None) -> dict:
     """Uma chamada ao segundo provedor. Levanta como qualquer outra falha."""
@@ -1509,15 +1545,40 @@ def _astra_call(contents: list, schema: dict, tag: str,
     # Sem `temperature`: este modelo recusa 0 ("Only the default (1) value is
     # supported") e responder com o padrao e o que o torna util aqui — duas
     # perguntas iguais podem dar respostas diferentes.
-    _t0 = time.monotonic()
-    resp = cliente.chat.completions.create(
+    # Os argumentos num dict: a repergunta contra recusa precisa repetir a
+    # MESMA chamada, e duplicar a montagem convidaria as duas a divergirem.
+    pedido = dict(
         model=modelo,
         messages=[{"role": "user",
                    "content": _contents_para_openai(contents, schema)}],
         response_format={"type": "json_object"},
     )
+    _t0 = time.monotonic()
+    resp = cliente.chat.completions.create(**pedido)
     _tracar_astra(f"RESPONDEU tag={tag} em {time.monotonic() - _t0:.1f}s")
-    return _json.loads(resp.choices[0].message.content)
+    resposta = _json.loads(resp.choices[0].message.content)
+
+    # Recusa nao e resposta: repergunta enquanto houver orcamento.
+    #
+    # Ver `_MARCAS_RECUSA_SEGUNDO` para a medicao. O ponto que importa: a
+    # recusa e nao-deterministica, entao insistir com o MESMO provedor resolve
+    # — trocar de provedor nao resolveria, porque nao ha nada de errado com a
+    # imagem nem com o prompt.
+    if _e_recusa_do_segundo(resposta):
+        for extra in range(2, TENTATIVAS_CONTRA_RECUSA + 1):
+            if politica.fim is not None and politica.restante_ms < ASTRA_DEADLINE_MIN_S * 1000:
+                print(f"    [captcha/{tag}] segundo provedor recusou a tarefa e "
+                      "nao ha orcamento para insistir.")
+                break
+            print(f"    [captcha/{tag}] segundo provedor RECUSOU a tarefa "
+                  f"(nao e incapacidade) — reperguntando {extra}/"
+                  f"{TENTATIVAS_CONTRA_RECUSA}.")
+            resp = cliente.chat.completions.create(**pedido)
+            resposta = _json.loads(resp.choices[0].message.content)
+            if not _e_recusa_do_segundo(resposta):
+                break
+
+    return resposta
 
 
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,

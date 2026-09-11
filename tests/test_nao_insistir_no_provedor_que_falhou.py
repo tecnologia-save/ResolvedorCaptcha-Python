@@ -30,8 +30,13 @@ def test_um_modelo_e_o_bastante_antes_de_trocar_de_PROVEDOR():
     assert "mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO" in fonte
     # Só quando há para quem ir: sem segundo provedor a rotação é tudo o que
     # existe, e encurtar tiraria tentativa sem dar nada em troca.
+    #
+    # A condição é `_astra_configurado()`, e não `reserva_ms`: este último só é
+    # diferente de zero quando também existe orçamento total, e amarrar a troca
+    # de provedor a isso deixava de fora quem chama sem prazo. A pergunta certa
+    # é "existe alternativa?", não "existe orçamento?".
     i = fonte.index("mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO")
-    assert "reserva_ms and" in fonte[max(0, i - 60):i]
+    assert "_astra_configurado() and" in fonte[max(0, i - 60):i]
 
 
 def test_a_reserva_sai_do_TETO_e_nao_so_da_decisao_de_continuar():

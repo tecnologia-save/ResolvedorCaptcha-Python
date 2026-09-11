@@ -1595,7 +1595,14 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # Depois do primeiro modelo falhar, a alternativa de verdade e o OUTRO
         # PROVEDOR — nao o proximo modelo do mesmo. Ver
         # `MODELOS_GEMINI_ANTES_DO_SEGUNDO`.
-        if reserva_ms and mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO:
+        # Condicionado a HAVER segundo provedor — nao a `reserva_ms`.
+        #
+        # `reserva_ms` so e diferente de zero quando ha astra E existe orcamento
+        # total (`politica.fim`). Amarrar a troca de provedor a isso deixava de
+        # fora quem chama sem prazo total: ali o Gemini rodaria os tres modelos
+        # de novo, que e exatamente o comportamento que esta mudanca remove.
+        # A pergunta certa e "existe alternativa?", e nao "existe orcamento?".
+        if _astra_configurado() and mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO:
             print(f"    [captcha/{tag}] {mi} modelo(s) do Gemini falharam — "
                   f"indo ao segundo provedor em vez de tentar o proximo "
                   f"(restam {politica.restante_ms / 1000:.0f}s).")

@@ -1523,7 +1523,8 @@ def _astra_call(contents: list, schema: dict, tag: str,
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None,
                  rodizio: int = 0,
-                 rodizio_segundo_provedor: int | None = None) -> dict:
+                 rodizio_segundo_provedor: int | None = None,
+                 direto_ao_segundo: bool = False) -> dict:
     """Chama o Gemini com FALLBACK de modelos quando o principal está sobrecarregado.
 
     Para cada modelo em GEMINI_MODELS, tenta GEMINI_TRIES_PER_MODEL vezes com backoff
@@ -1570,6 +1571,19 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                 print(f"    [captcha/{tag}] segundo provedor falhou | "
                       f"{_diagnostico_erro(e)} — voltando ao Gemini.")
                 _despejar_erro_para_diagnostico(e, f"{tag}-astra", "astra")
+    # `direto_ao_segundo`: pula o Gemini e vai ao segundo goleiro.
+    #
+    # Existe para o caso em que o Gemini RESPONDEU e a resposta nao serve —
+    # confianca baixa, tiles vazios. Ate 11/09/2026 isso mandava a pergunta de
+    # volta para o Gemini com outro modelo, e o segundo provedor so era
+    # consultado quando havia ERRO de chamada. Erro e imprecisao sao a mesma
+    # coisa do ponto de vista de quem espera a resposta: o Gemini nao fechou.
+    #
+    # Com `temperature=0.0` o Gemini tende a repetir a propria resposta; a
+    # rotacao de modelo atenua, mas quem muda de verdade e trocar de PROVEDOR.
+    if direto_ao_segundo and _astra_configurado():
+        return _astra_call(contents, schema, tag, _politica(politica))
+
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
         ativos = ativos[giro:] + ativos[:giro]
@@ -2839,7 +2853,7 @@ def _limpar_texto(valor, max_len: int = 200) -> str:
 
 def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
                   politica: PoliticaLatencia | None = None,
-                  rodizio: int = 0) -> dict:
+                  rodizio: int = 0, direto_ao_segundo: bool = False) -> dict:
     """Grade 3x3 → Gemini → {task_summary, matching_tiles, confidence}."""
     if ref_img:
         contents = [
@@ -2853,7 +2867,8 @@ def _gemini_grade(png: bytes, ref_img: Optional[bytes], api_key: str,
             _PROMPT_GRADE,
         ]
     return _gemini_call(contents, _SCHEMA_GRADE, api_key, "grade", politica,
-                        rodizio=rodizio)
+                        rodizio=rodizio,
+                        direto_ao_segundo=direto_ao_segundo)
 
 
 _PROMPT_GRADE_FUSED = """\
@@ -3939,10 +3954,18 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                 continue
 
             try:
-                # `attempt - 1` gira o modelo: a 2a opiniao vem de OUTRO,
-                # unico jeito de a resposta mudar com temperature=0.0.
+                # Da 2a tentativa em diante vai ao SEGUNDO GOLEIRO.
+                #
+                # `attempt - 1` girava o modelo do Gemini — unico jeito de a
+                # resposta mudar com `temperature=0.0`. So que girar modelo
+                # dentro do mesmo provedor muda pouco, e o Gemini ja tinha
+                # respondido algo inutil. Ate 11/09/2026 o astra so entrava
+                # quando havia ERRO de chamada; resposta ruim voltava para o
+                # Gemini. Erro e imprecisao sao a mesma coisa para quem espera
+                # a resposta: ele nao fechou.
                 result = _gemini_grade(png, ref_img, api_key, politica,
-                                       rodizio=attempt - 1)
+                                       rodizio=attempt - 1,
+                                       direto_ao_segundo=(attempt > 1))
             except Exception as e:
                 print(f"    [captcha/grade] Gemini erro (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")
@@ -3952,7 +3975,8 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
             valid_tiles = sorted({i for i in result.get("matching_tiles", []) if 0 <= i <= 8})
             if result.get("confidence") == "low" or not valid_tiles:
                 motivo = "confiança baixa" if result.get("confidence") == "low" else "tiles vazios"
-                print(f"    [captcha/grade] {motivo} — retentando Gemini (tentativa {attempt})...")
+                print(f"    [captcha/grade] {motivo} — indo ao segundo "
+                      f"provedor (tentativa {attempt})...")
                 result, valid_tiles = None, []
                 time.sleep(1)
                 continue

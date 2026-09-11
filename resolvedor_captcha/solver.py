@@ -137,6 +137,22 @@ GEMINI_TRIES_PER_MODEL = 2    # tentativas por modelo dentro de _gemini_call (tr
 # execucao. Mas 12s, que foi a primeira tentativa de corte, era CEDO DEMAIS:
 # uma chamada boa levou 19,8s na mesma medicao.
 #
+# REMEDIDO em 11/09/2026, sobre 9 runs e 38 chamadas que responderam:
+#
+#     p50 = 9,6s   p90 = 22,4s   p95 = 25,3s   max = 30,1s
+#
+# A pior resposta boa subiu de 19,8s para 30,1s — o numero acima envelheceu, e
+# decisoes estavam sendo tomadas com ele. O que cada teto custaria em respostas
+# boas perdidas: 12s corta 37%, 15s corta 18%, 20s corta 11%, 25s corta 5%,
+# 27s corta 3%, 40s corta 0%.
+#
+# Por isso o teto por tipo NAO foi reduzido: ele nao cortava nada. O defeito
+# dele era outro — podia valer sozinho e consumir o orcamento inteiro —, e quem
+# resolve isso e `timeout_efetivo_ms(preservar_retentativa=True)`.
+#
+# O dado que mais pesa nessa medicao nem e a latencia: foram 76 FALHAS para 38
+# sucessos. Teto e afinacao; a taxa de falha e o problema.
+#
 # O que os numeros mostram e que a latencia varia enormemente no MESMO modelo,
 # minuto a minuto: 1,2s numa chamada e 504 DEADLINE_EXCEEDED aos 29,1s na
 # seguinte. Nao e modelo ruim — e o lado do Google oscilando. Por isso o teto

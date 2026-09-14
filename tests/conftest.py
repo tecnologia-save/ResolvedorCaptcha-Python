@@ -100,3 +100,19 @@ def gemini(monkeypatch):
     monkeypatch.setattr(solver, "_gemini_grade_fused", falso)
     monkeypatch.setattr(solver, "_gemini_pixel", falso_pixel)
     return estado
+
+
+@pytest.fixture(autouse=True)
+def memoria_do_gemini_limpa():
+    """Zera a memória de "o Gemini não fechou" entre testes.
+
+    Mesma razão de `bancada_limpa`: é estado global de módulo. Um teste que
+    marca a falha deixava o seguinte indo direto ao segundo provedor — medido na
+    primeira bateria da mudança: `test_a_rodada_do_segundo_provedor_depende_do_TIPO`
+    recebeu a resposta do astra onde esperava a do Gemini.
+    """
+    solver._GEMINI_FALHOU_EM.clear()
+    solver._novo_captcha()
+    yield
+    solver._GEMINI_FALHOU_EM.clear()
+    solver._novo_captcha()

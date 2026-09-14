@@ -1618,6 +1618,75 @@ def _astra_call(contents: list, schema: dict, tag: str,
     return resposta
 
 
+# ── Gemini que já não fechou não é perguntado de novo ─────────────────────────
+#
+# Pedido do Jean em 14/09/2026, depois de ver a mesma cena várias vezes: "o
+# Gemini falha, você chama o Astra. Por que na segunda etapa não chama direto o
+# Astra, em vez de refazer a chamada ao Gemini que já deu erro?"
+#
+# RUN-abbe3a61, YAGO DAMASCENO, captcha de imagem com 58s de orçamento:
+#
+#     19:33:02  Rodada 1 — Gemini
+#     19:33:27  Gemini não fechou — perguntando ao segundo provedor   (25s)
+#     19:33:55  Astra respondeu, clicou; o hCaptcha trocou o desafio
+#     19:34:00  Rodada 2: "parando a cadeia do Gemini com 0s"
+#     19:34:29  Rodadas 3 a 5 sem orçamento nenhum — empresa perdida
+#
+# Mesmo padrão na FRIGOTOTI (RUN-42bd82ab): cada rodada pagava ~10s de Gemini
+# antes de o Astra ser ouvido. Duas memórias:
+#
+#   - NESTE captcha (uma chamada a `solve_hcaptcha`, incluindo o segundo passo
+#     que o hCaptcha emenda): uma vez que o Gemini não fechou, todo o resto vai
+#     ao Astra — qualquer que seja o tipo do passo seguinte;
+#   - no PRÓXIMO captcha do mesmo tipo, por `MEMORIA_GEMINI_FALHOU_S`: o captcha
+#     de imagem da empresa seguinte já começa pelo Astra. Por TIPO porque na
+#     grade o Gemini é o melhor medido (6/6), e uma falha em imagem não diz nada
+#     sobre grade.
+#
+# O atalho da própria memória não a renova — senão o Gemini nunca mais seria
+# ouvido enquanto houvesse captcha a cada 15 min. E se o Astra ERRAR no atalho
+# da memória, ela é esquecida e o Gemini é chamado: memória não pode deixar o
+# captcha sem provedor nenhum.
+MEMORIA_GEMINI_FALHOU_S = 15 * 60
+# Triagem é diagnóstico de amostra, não resolução: não entra na memória.
+TAGS_SEM_MEMORIA = frozenset({"triagem"})
+_GEMINI_FALHOU_NESTE_CAPTCHA = {"sim": False}
+_GEMINI_FALHOU_EM: dict[str, float] = {}
+
+
+def _novo_captcha() -> None:
+    """Início de um captcha: a memória DESTE captcha começa limpa."""
+    _GEMINI_FALHOU_NESTE_CAPTCHA["sim"] = False
+
+
+def _marcar_gemini_nao_fechou(tag: str) -> None:
+    if tag in TAGS_SEM_MEMORIA:
+        return
+    _GEMINI_FALHOU_NESTE_CAPTCHA["sim"] = True
+    _GEMINI_FALHOU_EM[tag] = time.monotonic()
+
+
+def _esquecer_falha_do_gemini(tag: str) -> None:
+    _GEMINI_FALHOU_NESTE_CAPTCHA["sim"] = False
+    _GEMINI_FALHOU_EM.pop(tag, None)
+
+
+def _motivo_para_pular_gemini(tag: str) -> str:
+    """Por que ir direto ao segundo provedor, ou "" para perguntar ao Gemini."""
+    if tag in TAGS_SEM_MEMORIA:
+        return ""
+    if _GEMINI_FALHOU_NESTE_CAPTCHA["sim"]:
+        return "o Gemini já não fechou neste captcha"
+    quando = _GEMINI_FALHOU_EM.get(tag)
+    if quando is None:
+        return ""
+    ha = time.monotonic() - quando
+    if ha >= MEMORIA_GEMINI_FALHOU_S:
+        _GEMINI_FALHOU_EM.pop(tag, None)
+        return ""
+    return f"o Gemini não fechou no último captcha de {tag} (há {ha / 60:.0f} min)"
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None,
                  rodizio: int = 0,
@@ -1633,6 +1702,18 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     politica = _politica(politica)
     last_exc = None
     ativos = modelos_ativos()
+    # O Gemini já não fechou neste captcha, ou no último do mesmo tipo: não é
+    # perguntado de novo. Ver `_motivo_para_pular_gemini`.
+    por_memoria = False
+    # `not politica.esgotado`: sem orçamento, o atalho chamaria o segundo
+    # provedor mesmo assim — a mesma guarda do rodízio logo abaixo.
+    if not direto_ao_segundo and _astra_configurado() and not politica.esgotado:
+        motivo_memoria = _motivo_para_pular_gemini(tag)
+        if motivo_memoria:
+            print(f"    [captcha/{tag}] {motivo_memoria} — indo direto ao "
+                  "segundo provedor.")
+            direto_ao_segundo = True
+            por_memoria = True
     # `rodizio` gira a ordem: e o que faz a RETENTATIVA perguntar a OUTRO
     # modelo. Com temperature=0.0 a mesma imagem no mesmo modelo devolve a
     # mesma resposta — repetir "confianca baixa" cinco vezes no mesmo modelo
@@ -1663,6 +1744,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                 RuntimeError("OPENAI_API_KEY ausente no processo da run"),
                 f"{tag}-astra-ausente", "astra")
         else:
+            if not por_memoria:
+                _marcar_gemini_nao_fechou(tag)
             try:
                 return _astra_call(contents, schema, tag, politica)
             except Exception as e:  # noqa: BLE001
@@ -1706,6 +1789,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         direto_ao_segundo = True
 
     if direto_ao_segundo and _astra_configurado():
+        if not por_memoria:
+            _marcar_gemini_nao_fechou(tag)
         # A recusa por orcamento e tratada AQUI, como no caminho normal.
         #
         # Sem este `except` ela escapava como excecao qualquer e o chamador a
@@ -1727,6 +1812,14 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                   f"restam {_p.restante_ms / 1000:.1f}s e o minimo viavel e "
                   f"{ASTRA_DEADLINE_MIN_S:.0f}s. Nao e falha dele.")
             raise
+        except Exception as e:  # noqa: BLE001
+            if not por_memoria:
+                raise
+            # A memória não pode deixar o captcha sem provedor: o Astra errou,
+            # então o Gemini volta a ser ouvido — e a memória é esquecida.
+            print(f"    [captcha/{tag}] segundo provedor falhou | "
+                  f"{_diagnostico_erro(e)} — voltando ao Gemini.")
+            _esquecer_falha_do_gemini(tag)
 
     if rodizio and len(ativos) > 1:
         giro = rodizio % len(ativos)
@@ -1887,6 +1980,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # ele tambem nao resolve, e a chamada so chegaria com o screenshot mais
     # velho ainda.
     if _astra_configurado() and not politica.esgotado:
+        _marcar_gemini_nao_fechou(tag)
         try:
             return _astra_call(contents, schema, tag, politica)
         except SegundoProvedorSemOrcamento:
@@ -4063,6 +4157,16 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
         if not _challenge_visible(page):
             return _sumiu("grade", marca_submissoes)
 
+        # Rodada sem orçamento não começa: na YAGO (RUN-abbe3a61) as rodadas
+        # 2 a 5 tiraram print e desistiram uma a uma, ~30s depois do fim do
+        # prazo. Nenhum provedor aceita menos que GEMINI_DEADLINE_MIN_MS.
+        if rnd > 1 and politica is not None and politica.fim is not None and (
+                politica.esgotado
+                or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
+            print(f"    [captcha/{grade}] Rodada {rnd}: restam "
+                  f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
+                  "para outra rodada. Encerrando.")
+            break
         print(f"    [captcha/grade] Rodada {rnd}/{max_rounds} — aguardando tiles carregarem...")
         tiles_ok = _wait_for_tiles(page)
         if not tiles_ok and not _challenge_visible(page):
@@ -4202,6 +4306,16 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         if not _challenge_visible(page):
             return _sumiu("grade_fused", marca_submissoes)
 
+        # Rodada sem orçamento não começa: na YAGO (RUN-abbe3a61) as rodadas
+        # 2 a 5 tiraram print e desistiram uma a uma, ~30s depois do fim do
+        # prazo. Nenhum provedor aceita menos que GEMINI_DEADLINE_MIN_MS.
+        if rnd > 1 and politica is not None and politica.fim is not None and (
+                politica.esgotado
+                or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
+            print(f"    [captcha/{grade_fused}] Rodada {rnd}: restam "
+                  f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
+                  "para outra rodada. Encerrando.")
+            break
         print(f"    [captcha/grade_fused] Rodada {rnd}/{max_rounds}...")
         time.sleep(0.5)
 
@@ -4440,6 +4554,16 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         if not _challenge_visible(page):
             return _sumiu("imagem", marca_submissoes)
 
+        # Rodada sem orçamento não começa: na YAGO (RUN-abbe3a61) as rodadas
+        # 2 a 5 tiraram print e desistiram uma a uma, ~30s depois do fim do
+        # prazo. Nenhum provedor aceita menos que GEMINI_DEADLINE_MIN_MS.
+        if rnd > 1 and politica is not None and politica.fim is not None and (
+                politica.esgotado
+                or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
+            print(f"    [captcha/{imagem}] Rodada {rnd}: restam "
+                  f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
+                  "para outra rodada. Encerrando.")
+            return False
         print(f"    [captcha/imagem] Rodada {rnd}/{max_rounds}...")
 
         instrucao = _extrair_instrucao(page)
@@ -5051,6 +5175,10 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
     api_key = os.environ.get("GEMINI_API_KEY", "")
     if not api_key or api_key.startswith("cole-"):
         raise RuntimeError("GEMINI_API_KEY não configurada no ambiente.")
+
+    # Memória de "o Gemini não fechou" DESTE captcha começa limpa; a do
+    # tipo, com prazo, continua. Ver `_motivo_para_pular_gemini`.
+    _novo_captcha()
 
     politica = PoliticaLatencia(
         timeout_ms=GEMINI_TIMEOUT_MS if gemini_timeout_ms is None else gemini_timeout_ms,

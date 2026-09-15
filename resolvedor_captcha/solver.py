@@ -1548,6 +1548,33 @@ def _e_recusa_do_segundo(resposta: dict) -> bool:
     return any(m in resumo for m in _MARCAS_RECUSA_SEGUNDO)
 
 
+# Quem respondeu a última chamada, e em quanto tempo. Lido pela linha de
+# resposta de cada rodada — ver `_tempos_da_rodada`.
+_ULTIMA_CHAMADA = {"provedor": "", "segundos": 0.0}
+
+
+def _comecar_rodada() -> float:
+    """Zera o registro da última chamada e devolve o instante do início."""
+    _ULTIMA_CHAMADA.update(provedor="", segundos=0.0)
+    return time.monotonic()
+
+
+def _tempos_da_rodada(inicio_rodada: float) -> str:
+    """"Astra respondeu em 9s · preparo e espera 12s", para a linha da resposta.
+
+    Pedido do Jean em 15/09/2026, junto com a limpeza do log: as linhas de
+    screenshot e recorte saíram, e eram elas que mediam o tempo parado antes de
+    o provedor ser chamado. "preparo e espera" é tudo da rodada que não foi a
+    chamada que respondeu: screenshot, recorte, tentativas que falharam, pausas.
+    """
+    total = time.monotonic() - inicio_rodada
+    provedor, segundos = _ULTIMA_CHAMADA["provedor"], _ULTIMA_CHAMADA["segundos"]
+    if not provedor:
+        return f"rodada em {total:.0f}s"
+    return (f"{provedor} respondeu em {segundos:.0f}s · preparo e espera "
+            f"{max(0.0, total - segundos):.0f}s")
+
+
 def _astra_call(contents: list, schema: dict, tag: str,
                 politica: PoliticaLatencia | None = None) -> dict:
     """Uma chamada ao segundo provedor. Levanta como qualquer outra falha."""
@@ -1616,6 +1643,7 @@ def _astra_call(contents: list, schema: dict, tag: str,
             if not _e_recusa_do_segundo(resposta):
                 break
 
+    _ULTIMA_CHAMADA.update(provedor="Astra", segundos=time.monotonic() - _t0)
     return resposta
 
 
@@ -1923,6 +1951,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
             if attempt == 1:
                 print(f"    [captcha/{tag}] perguntando ao Gemini ({model}).")
+            _t_gemini = time.monotonic()
             try:
                 resp = client.models.generate_content(
                     model=model,
@@ -1957,6 +1986,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                 _premiar(model)
                 if mi > 0:
                     print(f"    [captcha/{tag}] Resolvido com modelo alternativo '{model}'.")
+                _ULTIMA_CHAMADA.update(provedor=f"Gemini ({model})",
+                                       segundos=time.monotonic() - _t_gemini)
                 return json.loads(resp.text)
             except Exception as e:
                 last_exc = e
@@ -4205,6 +4236,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                   "para outra rodada. Encerrando.")
             break
         print(f"    [captcha/grade] Rodada {rnd}/{max_rounds} — aguardando tiles carregarem...")
+        _inicio_rodada = _comecar_rodada()
         tiles_ok = _wait_for_tiles(page)
         if not tiles_ok and not _challenge_visible(page):
             return _sumiu("grade", marca_submissoes, "enquanto aguardava tiles")
@@ -4295,7 +4327,8 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
 
         print(
             f"    [captcha/grade] '{_limpar_texto(result.get('task_summary'))}' "
-            f"| {result.get('confidence')} | tiles={valid_tiles}"
+            f"| {result.get('confidence')} | tiles={valid_tiles} · "
+            f"{_tempos_da_rodada(_inicio_rodada)}"
         )
 
         # ── FRESHNESS GUARD — última coisa antes do PRIMEIRO clique ──────────
@@ -4349,6 +4382,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                   "para outra rodada. Encerrando.")
             break
         print(f"    [captcha/grade_fused] Rodada {rnd}/{max_rounds}...")
+        _inicio_rodada = _comecar_rodada()
         time.sleep(0.5)
 
         if not _challenge_visible(page):
@@ -4514,7 +4548,8 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
 
         print(
             f"    [captcha/grade_fused] '{_limpar_texto(result.get('task_summary'))}' "
-            f"| {result.get('confidence')} | tiles={valid_tiles}"
+            f"| {result.get('confidence')} | tiles={valid_tiles} · "
+            f"{_tempos_da_rodada(_inicio_rodada)}"
         )
 
         # ── 5. Clique nos tiles usando bbox precisa ───────────────────────────
@@ -4593,6 +4628,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
                   "para outra rodada. Encerrando.")
             return False
         print(f"    [captcha/imagem] Rodada {rnd}/{max_rounds}...")
+        _inicio_rodada = _comecar_rodada()
 
         instrucao = _extrair_instrucao(page)
         print(f"    [captcha/imagem] Instrução: '{_limpar_texto(instrucao)}'")
@@ -4635,14 +4671,15 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             result = _gemini_pixel(png_raw, instrucao, api_key, politica,
                                    rodizio=rnd - 1)
         except Exception as e:
-            print(f"    [captcha/imagem] Gemini falhou | {_diagnostico_erro(e)}")
+            print(f"    [captcha/imagem] chamada falhou | {_diagnostico_erro(e)}")
             continue
 
         confidence = result.get("confidence", "low")
         action     = result.get("action", "click")
         tem_ponto  = result.get("x") is not None and result.get("y") is not None
         print(f"    [captcha/imagem] action={action} | confidence={confidence} | "
-              f"{'1 ponto' if tem_ponto else 'sem ponto'}")
+              f"{'1 ponto' if tem_ponto else 'sem ponto'} · "
+              f"{_tempos_da_rodada(_inicio_rodada)}")
 
         if confidence == "low":
             print("    [captcha/imagem] Confiança baixa — retentando...")

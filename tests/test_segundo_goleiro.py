@@ -26,10 +26,14 @@ def test_o_atalho_pula_o_gemini_de_verdade():
     """`direto_ao_segundo` não pode ser só um rótulo: tem de sair antes do
     laço de modelos, senão o Gemini é chamado assim mesmo."""
     fonte = inspect.getsource(solver._gemini_call)
-    i = fonte.index("if direto_ao_segundo and _astra_configurado():")
+    # `not astra_recusou` desde 15/09/2026: quem acabou de recusar não é
+    # chamado de novo na mesma chamada — ver test_astra_que_recusa_devolve_ao_gemini.
+    i = fonte.index("if direto_ao_segundo and not astra_recusou and _astra_configurado():")
     j = fonte.index("for mi, model in enumerate(ativos):")
     assert i < j, "o atalho vem antes do laço de modelos"
-    assert "return _astra_call(" in fonte[i:j]
+    trecho = fonte[i:j]
+    assert "resposta = _astra_call(" in trecho
+    assert trecho.index("resposta = _astra_call(") < trecho.index("return resposta")
 
 
 def test_sem_segundo_provedor_o_atalho_nao_se_aplica():

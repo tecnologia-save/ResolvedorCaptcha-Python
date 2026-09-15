@@ -1687,6 +1687,36 @@ def _motivo_para_pular_gemini(tag: str) -> str:
     return f"o Gemini não fechou no último captcha de {tag} (há {ha / 60:.0f} min)"
 
 
+def _astra_recusou_insistindo(tag: str, resposta: dict) -> bool:
+    """O segundo provedor RECUSOU a tarefa mesmo depois das reperguntas?
+
+    Se sim, a vez volta ao Gemini NESTA chamada, e a memória de "o Gemini não
+    fechou" é esquecida.
+
+    ESQUADROMIL, RUN-2258caa2 (15/09/2026), grade, rodada 2:
+
+        o Gemini já não fechou neste captcha — indo direto ao segundo provedor.
+        segundo provedor RECUSOU a tarefa — reperguntando 2/3, 3/3
+        tiles vazios — indo ao segundo provedor (tentativa 1)   → recusou 3/3
+        tiles vazios — indo ao segundo provedor (tentativa 2)   → recusou 3/3
+        Rodada 2: sem tiles válidos.
+
+    Nove recusas, ~40 s e a rodada inteira perdida, sem o Gemini ser ouvido uma
+    vez. A regra "o Gemini não fechou, vai ao Astra" (pedido do Jean, 14/09)
+    vale nos dois sentidos: o Astra que não fecha também passa a vez.
+
+    Reperguntar ao Astra continua, dentro de `_astra_call`: a recusa não é
+    determinística e insistir resolve na maioria das vezes. Isto só entra
+    quando nem insistindo ele respondeu.
+    """
+    if not _e_recusa_do_segundo(resposta):
+        return False
+    print(f"    [captcha/{tag}] segundo provedor recusou a tarefa mesmo "
+          "insistindo — a vez volta ao Gemini.")
+    _esquecer_falha_do_gemini(tag)
+    return True
+
+
 def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                  politica: PoliticaLatencia | None = None,
                  rodizio: int = 0,
@@ -1705,6 +1735,9 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # O Gemini já não fechou neste captcha, ou no último do mesmo tipo: não é
     # perguntado de novo. Ver `_motivo_para_pular_gemini`.
     por_memoria = False
+    # O Astra recusou nesta chamada mesmo insistindo: não é perguntado de novo
+    # nela. Ver `_astra_recusou_insistindo`.
+    astra_recusou = False
     # `not politica.esgotado`: sem orçamento, o atalho chamaria o segundo
     # provedor mesmo assim — a mesma guarda do rodízio logo abaixo.
     if not direto_ao_segundo and _astra_configurado() and not politica.esgotado:
@@ -1747,7 +1780,10 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
             if not por_memoria:
                 _marcar_gemini_nao_fechou(tag)
             try:
-                return _astra_call(contents, schema, tag, politica)
+                resposta = _astra_call(contents, schema, tag, politica)
+                if not _astra_recusou_insistindo(tag, resposta):
+                    return resposta
+                astra_recusou = True
             except Exception as e:  # noqa: BLE001
                 print(f"    [captcha/{tag}] segundo provedor falhou | "
                       f"{_diagnostico_erro(e)} — voltando ao Gemini.")
@@ -1782,13 +1818,13 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # Isto nao inverte a ordem: quando o Gemini esta saudavel ele continua
     # primeiro na grade, onde tem 16/16 medido. So deixa de ser perguntado
     # quando ele acabou de dizer que nao esta.
-    if (not direto_ao_segundo and _astra_configurado()
+    if (not direto_ao_segundo and not astra_recusou and _astra_configurado()
             and not any(_pode_jogar(m) for m in GEMINI_MODELS)):
         print(f"    [captcha/{tag}] todos os modelos do Gemini de castigo — "
               "indo direto ao segundo provedor em vez de pagar o teto.")
         direto_ao_segundo = True
 
-    if direto_ao_segundo and _astra_configurado():
+    if direto_ao_segundo and not astra_recusou and _astra_configurado():
         if not por_memoria:
             _marcar_gemini_nao_fechou(tag)
         # A recusa por orcamento e tratada AQUI, como no caminho normal.
@@ -1805,7 +1841,10 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # vir para ca foi justamente por isso. Entao a recusa sobe com o tipo
         # dela, e quem espera a resposta sabe que foi falta de tempo.
         try:
-            return _astra_call(contents, schema, tag, _politica(politica))
+            resposta = _astra_call(contents, schema, tag, _politica(politica))
+            if not _astra_recusou_insistindo(tag, resposta):
+                return resposta
+            astra_recusou = True
         except SegundoProvedorSemOrcamento:
             _p = _politica(politica)
             print(f"    [captcha/{tag}] segundo provedor NAO chamado: "
@@ -1979,7 +2018,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     # NAO entra se o orcamento de tempo acabou: ai o problema e o relogio, que
     # ele tambem nao resolve, e a chamada so chegaria com o screenshot mais
     # velho ainda.
-    if _astra_configurado() and not politica.esgotado:
+    if _astra_configurado() and not politica.esgotado and not astra_recusou:
         _marcar_gemini_nao_fechou(tag)
         try:
             return _astra_call(contents, schema, tag, politica)

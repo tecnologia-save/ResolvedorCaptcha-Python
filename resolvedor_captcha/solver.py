@@ -4202,7 +4202,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
         if rnd > 1 and politica is not None and politica.fim is not None and (
                 politica.esgotado
                 or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
-            print(f"    [captcha/{grade}] Rodada {rnd}: restam "
+            print(f"    [captcha/grade] Rodada {rnd}: restam "
                   f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
                   "para outra rodada. Encerrando.")
             break
@@ -4351,7 +4351,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         if rnd > 1 and politica is not None and politica.fim is not None and (
                 politica.esgotado
                 or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
-            print(f"    [captcha/{grade_fused}] Rodada {rnd}: restam "
+            print(f"    [captcha/grade_fused] Rodada {rnd}: restam "
                   f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
                   "para outra rodada. Encerrando.")
             break
@@ -4599,7 +4599,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         if rnd > 1 and politica is not None and politica.fim is not None and (
                 politica.esgotado
                 or politica.restante_ms < GEMINI_DEADLINE_MIN_MS):
-            print(f"    [captcha/{imagem}] Rodada {rnd}: restam "
+            print(f"    [captcha/imagem] Rodada {rnd}: restam "
                   f"{max(0, politica.restante_ms) / 1000:.1f}s — sem tempo "
                   "para outra rodada. Encerrando.")
             return False

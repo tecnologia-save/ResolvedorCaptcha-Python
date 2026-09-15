@@ -1576,8 +1576,10 @@ def _astra_call(contents: list, schema: dict, tag: str,
         teto_s = min(teto_s, restante_s)
     cliente = OpenAI(api_key=chave, base_url=base,
                      timeout=teto_s, max_retries=0)
-    print(f"    [captcha/{tag}] Gemini não fechou — perguntando ao segundo "
-          f"provedor.")
+    # Uma linha por chamada, dizendo QUEM. A frase anterior ("Gemini não fechou
+    # — perguntando ao segundo provedor") saía em toda chamada, inclusive onde o
+    # Astra é o primeiro, e fazia o log contar uma história que não aconteceu.
+    print(f"    [captcha/{tag}] perguntando ao Astra.")
     _tracar_astra(f"CHAMANDO tag={tag} modelo={modelo} teto={teto_s:.1f}s")
     # Sem `temperature`: este modelo recusa 0 ("Only the default (1) value is
     # supported") e responder com o padrao e o que o torna util aqui — duas
@@ -1604,12 +1606,11 @@ def _astra_call(contents: list, schema: dict, tag: str,
     if _e_recusa_do_segundo(resposta):
         for extra in range(2, TENTATIVAS_CONTRA_RECUSA + 1):
             if politica.fim is not None and politica.restante_ms < ASTRA_DEADLINE_MIN_S * 1000:
-                print(f"    [captcha/{tag}] segundo provedor recusou a tarefa e "
-                      "nao ha orcamento para insistir.")
+                print(f"    [captcha/{tag}] Astra recusou a tarefa e não há "
+                      "tempo para insistir.")
                 break
-            print(f"    [captcha/{tag}] segundo provedor RECUSOU a tarefa "
-                  f"(nao e incapacidade) — reperguntando {extra}/"
-                  f"{TENTATIVAS_CONTRA_RECUSA}.")
+            print(f"    [captcha/{tag}] Astra recusou a tarefa — perguntando "
+                  f"de novo ({extra}/{TENTATIVAS_CONTRA_RECUSA}).")
             resp = cliente.chat.completions.create(**pedido)
             resposta = _json.loads(resp.choices[0].message.content)
             if not _e_recusa_do_segundo(resposta):
@@ -1711,8 +1712,8 @@ def _astra_recusou_insistindo(tag: str, resposta: dict) -> bool:
     """
     if not _e_recusa_do_segundo(resposta):
         return False
-    print(f"    [captcha/{tag}] segundo provedor recusou a tarefa mesmo "
-          "insistindo — a vez volta ao Gemini.")
+    print(f"    [captcha/{tag}] Astra recusou a tarefa mesmo insistindo — "
+          "a vez volta ao Gemini.")
     _esquecer_falha_do_gemini(tag)
     return True
 
@@ -1743,8 +1744,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     if not direto_ao_segundo and _astra_configurado() and not politica.esgotado:
         motivo_memoria = _motivo_para_pular_gemini(tag)
         if motivo_memoria:
-            print(f"    [captcha/{tag}] {motivo_memoria} — indo direto ao "
-                  "segundo provedor.")
+            print(f"    [captcha/{tag}] Gemini pulado: {motivo_memoria}.")
             direto_ao_segundo = True
             por_memoria = True
     # `rodizio` gira a ordem: e o que faz a RETENTATIVA perguntar a OUTRO
@@ -1785,8 +1785,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
                     return resposta
                 astra_recusou = True
             except Exception as e:  # noqa: BLE001
-                print(f"    [captcha/{tag}] segundo provedor falhou | "
-                      f"{_diagnostico_erro(e)} — voltando ao Gemini.")
+                print(f"    [captcha/{tag}] Astra falhou | "
+                      f"{_diagnostico_erro(e)} — perguntando ao Gemini.")
                 _despejar_erro_para_diagnostico(e, f"{tag}-astra", "astra")
     # `direto_ao_segundo`: pula o Gemini e vai ao segundo goleiro.
     #
@@ -1821,7 +1821,7 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
     if (not direto_ao_segundo and not astra_recusou and _astra_configurado()
             and not any(_pode_jogar(m) for m in GEMINI_MODELS)):
         print(f"    [captcha/{tag}] todos os modelos do Gemini de castigo — "
-              "indo direto ao segundo provedor em vez de pagar o teto.")
+              "perguntando ao Astra em vez de pagar o teto.")
         direto_ao_segundo = True
 
     if direto_ao_segundo and not astra_recusou and _astra_configurado():
@@ -1847,17 +1847,17 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
             astra_recusou = True
         except SegundoProvedorSemOrcamento:
             _p = _politica(politica)
-            print(f"    [captcha/{tag}] segundo provedor NAO chamado: "
-                  f"restam {_p.restante_ms / 1000:.1f}s e o minimo viavel e "
-                  f"{ASTRA_DEADLINE_MIN_S:.0f}s. Nao e falha dele.")
+            print(f"    [captcha/{tag}] Astra NÃO chamado: restam "
+                  f"{_p.restante_ms / 1000:.1f}s e ele precisa de "
+                  f"{ASTRA_DEADLINE_MIN_S:.0f}s.")
             raise
         except Exception as e:  # noqa: BLE001
             if not por_memoria:
                 raise
             # A memória não pode deixar o captcha sem provedor: o Astra errou,
             # então o Gemini volta a ser ouvido — e a memória é esquecida.
-            print(f"    [captcha/{tag}] segundo provedor falhou | "
-                  f"{_diagnostico_erro(e)} — voltando ao Gemini.")
+            print(f"    [captcha/{tag}] Astra falhou | "
+                  f"{_diagnostico_erro(e)} — perguntando ao Gemini.")
             _esquecer_falha_do_gemini(tag)
 
     if rodizio and len(ativos) > 1:
@@ -1894,19 +1894,18 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
         # A pergunta certa e "existe alternativa?", e nao "existe orcamento?".
         if _astra_configurado() and mi >= MODELOS_GEMINI_ANTES_DO_SEGUNDO:
             print(f"    [captcha/{tag}] {mi} modelo(s) do Gemini falharam — "
-                  f"indo ao segundo provedor em vez de tentar o proximo "
+                  f"perguntando ao Astra em vez do próximo modelo "
                   f"(restam {politica.restante_ms / 1000:.0f}s).")
             break
         if reserva_ms and politica.restante_ms < reserva_ms + GEMINI_DEADLINE_MIN_MS:
             print(f"    [captcha/{tag}] parando a cadeia do Gemini com "
                   f"{politica.restante_ms / 1000:.0f}s: o resto e reserva do "
-                  f"segundo provedor, que precisa de "
+                  f"Astra, que precisa de "
                   f"{ASTRA_DEADLINE_MIN_S:.0f}s.")
             break
         if provedor_fora:
             print(f"    [captcha/{tag}] '{model}' e os demais ficam de fora: "
-                  f"a cota é da CHAVE, não do modelo. Indo direto ao segundo "
-                  f"provedor.")
+                  f"a cota é da CHAVE, não do modelo. Perguntando ao Astra.")
             break
         if politica.timeout_efetivo_ms() < GEMINI_DEADLINE_MIN_MS:
             print(f"    [captcha/{tag}] restam "
@@ -1922,6 +1921,8 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
             break
         sem_opcionais = False
         for attempt in range(1, GEMINI_TRIES_PER_MODEL + 1):
+            if attempt == 1:
+                print(f"    [captcha/{tag}] perguntando ao Gemini ({model}).")
             try:
                 resp = client.models.generate_content(
                     model=model,
@@ -2031,11 +2032,11 @@ def _gemini_call(contents: list, schema: dict, api_key: str, tag: str,
             # segundo, e com razao: texto de excecao pode carregar conteudo do
             # provedor, e abrir excecao para "esta aqui e nossa" e como a regra
             # morre. Quem precisa saber e o restante em segundos, que temos.
-            print(f"    [captcha/{tag}] segundo provedor NAO chamado: "
-                  f"restam {politica.restante_ms / 1000:.1f}s e o minimo "
-                  f"viavel e {ASTRA_DEADLINE_MIN_S:.0f}s. Nao e falha dele.")
+            print(f"    [captcha/{tag}] Astra NÃO chamado: restam "
+                  f"{politica.restante_ms / 1000:.1f}s e ele precisa de "
+                  f"{ASTRA_DEADLINE_MIN_S:.0f}s.")
         except Exception as e:  # noqa: BLE001
-            print(f"    [captcha/{tag}] segundo provedor também falhou | "
+            print(f"    [captcha/{tag}] Astra também falhou | "
                   f"{_diagnostico_erro(e)}")
 
     # A mensagem desta excecao tambem e log: quem a captura acima imprime.
@@ -2898,7 +2899,6 @@ def _get_task_image_screenshot_and_bbox(
             page_bbox = build_page_bbox(bounds)
             png = page.screenshot(clip=page_bbox)
             if png:
-                print(f"    [captcha/imagem] Via DOM bounds: {bounds['width']:.0f}x{bounds['height']:.0f}px")
                 return png, page_bbox
     except Exception as e:
         print(f"    [captcha/imagem] DOM bounds falhou: {type(e).__name__}")
@@ -3253,7 +3253,6 @@ def _click_grade_tiles(page, indices: list[int]) -> None:
         try:
             tasks.nth(idx).click(delay=random.randint(40, 110))
             time.sleep(random.uniform(0.18, 0.55))
-            print(f"    [captcha] Tile {idx} clicado.")
         except Exception as e:
             print(f"    [captcha] Erro ao clicar tile {idx}: {type(e).__name__}")
 
@@ -3498,7 +3497,6 @@ def _submit_captcha(page) -> bool:
     global _SUBMISSOES
     _SUBMISSOES += 1
     page.wait_for_timeout(300)
-    print("    [captcha] Submetendo desafio...")
 
     # 1. CLIQUE REAL no frame — era a estrategia 2, e nunca era alcancada.
     #
@@ -3945,7 +3943,7 @@ def _gemini_cartao_animal(frames: list, api_key: str,
             result = _gemini_call(contents, _SCHEMA_CARTAO_ANIMAL, api_key,
                                   "cartao", politica)
         except Exception as e:
-            print(f"    [captcha/cartao] Gemini erro tentativa {attempt} | "
+            print(f"    [captcha/cartao] chamada falhou (tentativa {attempt}) | "
                   f"{_diagnostico_erro(e)}")
             break  # todos os modelos falharam; repetir rápido não ajuda
 
@@ -4228,11 +4226,6 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                 # A identidade nasce COM a captura e dos MESMOS bytes que vão
                 # ao modelo — é o que amarra a resposta a este desafio.
                 fingerprint = _fingerprint_desafio(page, png)
-                _pw, _ph = _png_dims(png)
-                print(
-                    f"    [captcha/grade] Screenshot capturado: "
-                    f"{_pw}x{_ph}px, {len(png) // 1024} KB"
-                )
             except Exception as e:
                 print(f"    [captcha/grade] Screenshot falhou (tentativa {attempt}): {type(e).__name__}")
                 # Se o iframe sumiu é porque o captcha foi resolvido
@@ -4255,7 +4248,7 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
                                        rodizio=attempt - 1,
                                        direto_ao_segundo=(attempt > 1))
             except Exception as e:
-                print(f"    [captcha/grade] Gemini erro (tentativa {attempt}) | "
+                print(f"    [captcha/grade] chamada falhou (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")
                 time.sleep(1)
                 continue
@@ -4263,8 +4256,8 @@ def _solve_grade(page, api_key: str, max_rounds: int = 5,
             valid_tiles = sorted({i for i in result.get("matching_tiles", []) if 0 <= i <= 8})
             if result.get("confidence") == "low" or not valid_tiles:
                 motivo = "confiança baixa" if result.get("confidence") == "low" else "tiles vazios"
-                print(f"    [captcha/grade] {motivo} — indo ao segundo "
-                      f"provedor (tentativa {attempt})...")
+                print(f"    [captcha/grade] {motivo} — pedindo ao Astra "
+                      f"(tentativa {attempt}).")
                 result, valid_tiles = None, []
                 time.sleep(1)
                 continue
@@ -4420,10 +4413,6 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                     if tiles_raw:
                         # ── 3. Overlay 3×3 numerado ──────────────────────────
                         tiles_png = _overlay_3x3_grid(tiles_raw)
-                        print(
-                            f"    [captcha/grade_fused] Tiles recortados: "
-                            f"{bounds['width']:.0f}×{bounds['height']:.0f}px"
-                        )
             except Exception as e:
                 print(f"    [captcha/grade_fused] Recorte falhou: {type(e).__name__}")
 
@@ -4473,7 +4462,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                     ref_img = _get_reference_image_bytes(page)
                     result = _gemini_grade(iframe_png, ref_img, api_key, politica)
             except Exception as e:
-                print(f"    [captcha/grade_fused] Gemini erro (tentativa {attempt}) | "
+                print(f"    [captcha/grade_fused] chamada falhou (tentativa {attempt}) | "
                       f"{_diagnostico_erro(e)}")
                 time.sleep(1)
                 continue
@@ -4486,8 +4475,8 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             if result.get("confidence") == "low" or not (valid_tiles or ponto_ok):
                 motivo = ("confiança baixa" if result.get("confidence") == "low"
                           else "sem ponto nem tiles")
-                print(f"    [captcha/grade_fused] {motivo} — indo ao segundo "
-                      f"provedor (tentativa {attempt})...")
+                print(f"    [captcha/grade_fused] {motivo} — pedindo ao Astra "
+                      f"(tentativa {attempt}).")
                 result, valid_tiles = None, []
                 time.sleep(1)
                 continue
@@ -4633,7 +4622,6 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         # justamente de enxergar a FORMA das figuras.
         #
         # A grade 3x3 nao muda: la os tiles ja sao celulas de verdade.
-        print(f"    [captcha/imagem] Screenshot: {len(png_raw) // 1024} KB")
 
         try:
             # `rodizio` faz cada RODADA começar num modelo diferente. Sem ele,
@@ -5233,7 +5221,6 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
     # já aberta começa a ser classificada de imediato.
     inicio = _aguardar_desafio_ou_checkbox(page, timeout_ms=10_000)
     if inicio == INICIO_NENHUM:
-        print("    [captcha] Nenhum captcha na página.")
         return True
     if inicio == INICIO_CHECKBOX:
         # Já sabemos que está visível: o clique não precisa reesperar por ele.
@@ -5243,7 +5230,8 @@ def solve_hcaptcha(page, max_rounds: int = 6, *,
         if politica.esgotado:
             print("    [captcha] Orçamento de tempo esgotado — resolução não concluída.")
             return False
-        print(f"    [captcha] === Iteração {rnd}/{max_rounds} ===")
+        if rnd > 1:
+            print(f"    [captcha] === Iteração {rnd}/{max_rounds} ===")
 
         # Quem chama pode JA ter classificado — e nesse caso reclassificar e
         # pior do que redundante.

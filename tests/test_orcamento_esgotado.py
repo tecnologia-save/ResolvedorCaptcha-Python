@@ -33,8 +33,10 @@ def test_o_log_da_recusa_e_montado_dos_NUMEROS_e_nao_da_excecao():
     fonte = inspect.getsource(solver)
     i = fonte.index("except SegundoProvedorSemOrcamento")
     trecho = fonte[i:i + 900]
-    assert "segundo provedor NAO chamado" in trecho
-    assert "Nao e falha dele" in trecho
+    # "Astra NÃO chamado" desde 15/09/2026: o log passou a dar nome a quem é
+    # perguntado. Ver test_log_diz_quem_foi_perguntado.
+    assert "Astra NÃO chamado" in trecho
+    assert "ele precisa de" in trecho
     assert "{e}" not in trecho.split("except Exception")[0]
 
 

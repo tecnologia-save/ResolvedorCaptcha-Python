@@ -19,7 +19,7 @@ def test_resposta_INUTIL_vai_ao_segundo_provedor():
     fonte = inspect.getsource(solver._solve_grade)
     assert "direto_ao_segundo=(attempt > 1)" in fonte
     assert "retentando Gemini" not in fonte
-    assert "indo ao segundo" in fonte
+    assert "pedindo ao Astra" in fonte
 
 
 def test_o_atalho_pula_o_gemini_de_verdade():

@@ -2705,7 +2705,7 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
                 # Custa ~0,5 s e dois screenshots, só quando não há tiles — ou
                 # seja, só no caminho ambíguo, onde a geometria decidiria
                 # sozinha e podia decidir errado.
-                if _area_do_desafio_se_move(page):
+                if _area_do_desafio_se_move(page) and not _e_clique_em_ponto(instrucao_lower):
                     print(f"    [captcha] Tipo: {TIPO_BOLA} (área animada, "
                           f"{bounds['width']:.0f}x{bounds['height']:.0f}px "
                           f"ratio={ratio:.2f}).")
@@ -3374,8 +3374,50 @@ ESQUEMA_PIXEL = {
 }
 
 
+# Enunciados do desafio "clique no vao": a resposta esta em UM quadro, mesmo
+# quando o fundo se mexe.
+#
+# 16/09/2026: o portal passou a servir este desafio na representacao — 55 das 57
+# classificacoes do dia. Quando o fundo animado enganava a sonda de movimento,
+# ele ia para o resolvedor da BOLA, que pergunta por animais e trajetoria:
+#
+#     [captcha] Sonda de movimento: 51.92% dos pixels mudaram — animado.
+#     [captcha] Tipo: bola_em_movimento
+#     [captcha/bola] Instrução: 'Encontre a falha na corrente'
+#     [captcha/bola] animais=[] tocados=[] restantes=[] confidence=low
+#
+# Duas empresas perdidas assim no dia. O enunciado e o sinal mais forte que
+# existe aqui: quem pede para clicar num vao descreve uma CENA PARADA.
+MARCAS_CLIQUE_EM_PONTO = (
+    "corrente", "ponto partido", "precisa de ser ligado", "precisa ser ligado",
+    "falta a ligação", "falta a ligacao", "onde ligar", "elo",
+)
+
+
+def _e_clique_em_ponto(instrucao_lower: str) -> bool:
+    """O enunciado descreve um clique em ponto de cena parada?"""
+    return any(m in (instrucao_lower or "") for m in MARCAS_CLIQUE_EM_PONTO)
+
+
+# Quem pergunta primeiro em cada RODADA do clique em ponto.
+#
+# Medido em 16/09/2026, nas runs do dia: 103 respostas neste formato, todas do
+# Astra (ele e o primeiro deste tipo e nunca falhou), e 39 captchas fechados —
+# cerca de 38% por tentativa. Repetir o mesmo provedor com a mesma imagem tende
+# a repetir a mesma resposta, e o prazo so da para 2 rodadas.
+#
+# Rodada impar mantem o Astra na frente; rodada par ouve o Gemini primeiro, para
+# a segunda tentativa ser uma opiniao NOVA. `_gemini_call` ainda respeita a
+# memoria de "o Gemini nao fechou": se ele falhou de verdade neste captcha, o
+# atalho para o Astra continua valendo.
+def _alternar_provedor(rnd: int) -> int | None:
+    """`rodizio_segundo_provedor` desta rodada: None mantem a ordem do tipo."""
+    return None if rnd % 2 == 1 else 99
+
+
 def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
-                  politica: PoliticaLatencia | None = None, rodizio: int = 0) -> dict:
+                  politica: PoliticaLatencia | None = None, rodizio: int = 0,
+                  rodizio_segundo_provedor: int | None = None) -> dict:
     """Pergunta o CENTRO da figura em pixels, sem malha desenhada por cima.
 
     Medido em 09/09/2026 contra as amostras arquivadas de "figura diferente",
@@ -3403,7 +3445,8 @@ def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
         f"Um ponto só — o enunciado pede um clique."
     )
     return _gemini_call([_parte_imagem(png), prompt], ESQUEMA_PIXEL, api_key,
-                        "imagem", politica, rodizio=rodizio)
+                        "imagem", politica, rodizio=rodizio,
+                        rodizio_segundo_provedor=rodizio_segundo_provedor)
 
 
 def _dimensoes_png(png: bytes) -> tuple[int, int]:
@@ -4486,8 +4529,10 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                     # `_gemini_pixel` pergunta o CENTRO da figura em pixels do
                     # recorte, e `_click_pixel` converte para o viewport com o
                     # bbox — o mesmo par que resolve a familia `imagem`.
-                    ponto = _gemini_pixel(tiles_png, instrucao_fused, api_key,
-                                          politica, rodizio=attempt - 1)
+                    ponto = _gemini_pixel(
+                        tiles_png, instrucao_fused, api_key, politica,
+                        rodizio=attempt - 1,
+                        rodizio_segundo_provedor=_alternar_provedor(rnd))
                     result = {"ponto": ponto,
                               "task_summary": ponto.get("description", ""),
                               "confidence": ponto.get("confidence", "high")}
@@ -4668,8 +4713,9 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             #
             # O mecanismo já existia e estava ligado nos outros resolvedores;
             # este ficou de fora.
-            result = _gemini_pixel(png_raw, instrucao, api_key, politica,
-                                   rodizio=rnd - 1)
+            result = _gemini_pixel(
+                png_raw, instrucao, api_key, politica, rodizio=rnd - 1,
+                rodizio_segundo_provedor=_alternar_provedor(rnd))
         except Exception as e:
             print(f"    [captcha/imagem] chamada falhou | {_diagnostico_erro(e)}")
             continue

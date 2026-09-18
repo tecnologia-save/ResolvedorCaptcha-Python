@@ -203,11 +203,14 @@ MODELOS_GEMINI_ANTES_DO_SEGUNDO = 1
 # proposital: o teto não está aqui para cortar chamada lenta, e sim para
 # denunciar pool saturado. Foi exatamente assim que pro-latest, flash-latest e
 # 3.6-flash saíram da lista — estouraram o teto em vez de responder.
-# Ajustável por ambiente para diagnóstico, com piso de 1 s.
+# Ajustável por ambiente para diagnóstico, com piso de 1 s. Default 25s: 20s ja
+# tinha folga sobre a pior chamada medida (~4,1s), mas MAQUINAS/REDES LENTAS
+# (ex.: log da victoria, 18/09) sofrem latencia bem maior que a bancada — mais
+# margem por chamada reduz timeout espurio. Continua abaixo dos 30s do teto.
 try:
-    GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "20000") or "20000"))
+    GEMINI_TIMEOUT_MS = max(1_000, int(os.getenv("GEMINI_TIMEOUT_MS", "25000") or "25000"))
 except (ValueError, TypeError):
-    GEMINI_TIMEOUT_MS = 20_000
+    GEMINI_TIMEOUT_MS = 25_000
 
 # Tipos de desafio que `_detect_challenge_type` classifica. Vocabulário FECHADO
 # e público: quem integra precisa decidir POLÍTICA por tipo — o portal Serviços

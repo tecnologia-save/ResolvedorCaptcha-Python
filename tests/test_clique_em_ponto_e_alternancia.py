@@ -41,7 +41,8 @@ def test_a_sonda_de_movimento_nao_vence_o_enunciado():
     """Fundo animado não manda mais este desafio ao resolvedor da bola."""
     import inspect
     fonte = inspect.getsource(solver)
-    assert "_area_do_desafio_se_move(page) and not _e_clique_em_ponto(" in fonte
+    # Desde 18/09/2026 a regra é mais forte: bola só quando o enunciado pede.
+    assert "_area_do_desafio_se_move(page) and _bola_pelo_enunciado(" in fonte
 
 
 def test_alternancia_por_rodada():

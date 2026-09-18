@@ -1553,6 +1553,35 @@ def _e_recusa_do_segundo(resposta: dict) -> bool:
 _ULTIMA_CHAMADA = {"provedor": "", "segundos": 0.0}
 
 
+class _Etapas:
+    """Onde vao os segundos de uma rodada antes de o provedor responder.
+
+    18/09/2026: o log passou a mostrar "Astra respondeu em 4s · preparo e espera
+    9s" — dois tercos da rodada fora do modelo, e sem dizer onde. Com o prazo da
+    representacao em 59s, cortar o preparo e o que faz caber uma terceira rodada.
+    """
+
+    def __init__(self):
+        self._t = time.monotonic()
+        self.partes: list[tuple[str, float]] = []
+
+    def marcar(self, nome: str) -> None:
+        agora = time.monotonic()
+        self.partes.append((nome, agora - self._t))
+        self._t = agora
+
+    def texto(self) -> str:
+        pedacos = []
+        for nome, segundos in self.partes:
+            if nome == "chamada" and _ULTIMA_CHAMADA["segundos"]:
+                # A chamada inteira menos o que o provedor levou = o nosso lado:
+                # conversao da imagem, montagem do pedido, cliente.
+                segundos = max(0.0, segundos - _ULTIMA_CHAMADA["segundos"])
+                nome = "montagem da chamada"
+            pedacos.append(f"{nome} {segundos:.1f}s")
+        return "preparo: " + ", ".join(pedacos) if pedacos else ""
+
+
 def _comecar_rodada() -> float:
     """Zera o registro da última chamada e devolve o instante do início."""
     _ULTIMA_CHAMADA.update(provedor="", segundos=0.0)
@@ -2705,7 +2734,7 @@ def _detect_challenge_type(page, timeout_ms: int = 12_000,
                 # Custa ~0,5 s e dois screenshots, só quando não há tiles — ou
                 # seja, só no caminho ambíguo, onde a geometria decidiria
                 # sozinha e podia decidir errado.
-                if _area_do_desafio_se_move(page) and not _e_clique_em_ponto(instrucao_lower):
+                if _area_do_desafio_se_move(page) and _bola_pelo_enunciado(instrucao_lower):
                     print(f"    [captcha] Tipo: {TIPO_BOLA} (área animada, "
                           f"{bounds['width']:.0f}x{bounds['height']:.0f}px "
                           f"ratio={ratio:.2f}).")
@@ -3397,6 +3426,35 @@ MARCAS_CLIQUE_EM_PONTO = (
 def _e_clique_em_ponto(instrucao_lower: str) -> bool:
     """O enunciado descreve um clique em ponto de cena parada?"""
     return any(m in (instrucao_lower or "") for m in MARCAS_CLIQUE_EM_PONTO)
+
+
+# O que faz um desafio ser da BOLA: a resposta so existe na sequencia — "a bola
+# que nunca toca", "a flor em que a abelha nunca pousa". Fundo animado, sozinho,
+# nao diz nada.
+#
+# 18/09/2026: o portal trocou o desafio da representacao de novo, agora "o objeto
+# que consegue rolar numa superficie plana". Nao estava em
+# `MARCAS_CLIQUE_EM_PONTO`, e duas empresas cairam no resolvedor da bola quando o
+# fundo estava animado. Lista de desafios conhecidos envelhece em um dia; a
+# mecanica da bola nao muda. Por isso a regra inverteu: a bola precisa ser
+# PEDIDA pelo enunciado.
+MARCAS_MECANICA_DE_SEQUENCIA = (
+    "nunca toca", "nunca alcança", "nunca alcanca", "nunca encosta",
+    "nunca pousa", "nunca pisa", "nunca passa", "nunca visita",
+    "não toca", "nao toca", "não encosta", "nao encosta", "jamais toca",
+)
+
+
+def _bola_pelo_enunciado(instrucao_lower: str | None) -> bool:
+    """Area animada vai ao resolvedor da bola so se o enunciado pedir.
+
+    Enunciado ilegivel mantem o comportamento antigo (animado = bola): sem texto
+    nao ha como saber, e esse era o caso que a sonda existia para cobrir.
+    """
+    texto = (instrucao_lower or "").strip()
+    if not texto:
+        return True
+    return any(m in texto for m in MARCAS_MECANICA_DE_SEQUENCIA)
 
 
 # Quem pergunta primeiro em cada RODADA do clique em ponto.
@@ -4426,6 +4484,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             break
         print(f"    [captcha/grade_fused] Rodada {rnd}/{max_rounds}...")
         _inicio_rodada = _comecar_rodada()
+        etapas = _Etapas()
         time.sleep(0.5)
 
         if not _challenge_visible(page):
@@ -4438,6 +4497,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         try:
             iframe_png = iframe_loc.screenshot(timeout=8_000)
             fingerprint = _fingerprint_desafio(page, iframe_png)
+            etapas.marcar("captura")
         except Exception as e:
             print(f"    [captcha/grade_fused] Screenshot falhou (rodada {rnd}): {type(e).__name__}")
             if not _challenge_visible(page):
@@ -4493,12 +4553,14 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
             except Exception as e:
                 print(f"    [captcha/grade_fused] Recorte falhou: {type(e).__name__}")
 
+        etapas.marcar("recorte")
         # ── 4. Gemini ─────────────────────────────────────────────────────────
         valid_tiles: list[int] = []
         result = None
         # O enunciado vai junto do recorte: sem ele `_gemini_pixel` nao sabe o
         # que procurar, porque o recorte nao contem o cabecalho.
         instrucao_fused = _extrair_instrucao(page)
+        etapas.marcar("enunciado")
 
         for attempt in range(1, MAX_GEMINI_TRIES + 1):
             if not _challenge_visible(page):
@@ -4533,6 +4595,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
                         tiles_png, instrucao_fused, api_key, politica,
                         rodizio=attempt - 1,
                         rodizio_segundo_provedor=_alternar_provedor(rnd))
+                    etapas.marcar("chamada")
                     result = {"ponto": ponto,
                               "task_summary": ponto.get("description", ""),
                               "confidence": ponto.get("confidence", "high")}
@@ -4594,7 +4657,7 @@ def _solve_grade_fused(page, api_key: str, max_rounds: int = 5,
         print(
             f"    [captcha/grade_fused] '{_limpar_texto(result.get('task_summary'))}' "
             f"| {result.get('confidence')} | tiles={valid_tiles} · "
-            f"{_tempos_da_rodada(_inicio_rodada)}"
+            f"{_tempos_da_rodada(_inicio_rodada)} · {etapas.texto()}"
         )
 
         # ── 5. Clique nos tiles usando bbox precisa ───────────────────────────
@@ -4674,11 +4737,14 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             return False
         print(f"    [captcha/imagem] Rodada {rnd}/{max_rounds}...")
         _inicio_rodada = _comecar_rodada()
+        etapas = _Etapas()
 
         instrucao = _extrair_instrucao(page)
         print(f"    [captcha/imagem] Instrução: '{_limpar_texto(instrucao)}'")
+        etapas.marcar("enunciado")
 
         png_raw, area_bbox = _get_task_image_screenshot_and_bbox(page)
+        etapas.marcar("captura")
         if not png_raw:
             print("    [captcha/imagem] Screenshot falhou — aguardando...")
             time.sleep(1)
@@ -4690,6 +4756,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         # de propósito: comparar mecanismos diferentes rejeitaria sempre.
         _png_ident, _caixa_ident = _capturar_desafio(page)
         fingerprint = _fingerprint_desafio(page, _png_ident)
+        etapas.marcar("identidade")
 
         # SEM malha. Medido em 09/09/2026 contra as amostras arquivadas, com
         # as respostas marcadas na imagem para conferencia visual:
@@ -4716,6 +4783,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
             result = _gemini_pixel(
                 png_raw, instrucao, api_key, politica, rodizio=rnd - 1,
                 rodizio_segundo_provedor=_alternar_provedor(rnd))
+            etapas.marcar("chamada")
         except Exception as e:
             print(f"    [captcha/imagem] chamada falhou | {_diagnostico_erro(e)}")
             continue
@@ -4725,7 +4793,7 @@ def _solve_imagem(page, api_key: str, max_rounds: int = 5,
         tem_ponto  = result.get("x") is not None and result.get("y") is not None
         print(f"    [captcha/imagem] action={action} | confidence={confidence} | "
               f"{'1 ponto' if tem_ponto else 'sem ponto'} · "
-              f"{_tempos_da_rodada(_inicio_rodada)}")
+              f"{_tempos_da_rodada(_inicio_rodada)} · {etapas.texto()}")
 
         if confidence == "low":
             print("    [captcha/imagem] Confiança baixa — retentando...")

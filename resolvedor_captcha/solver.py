@@ -1462,6 +1462,7 @@ def _contents_para_openai(contents: list, schema: dict) -> list:
     """
     import base64
     import json as _json
+    _t0 = time.monotonic()
     blocos = []
     for parte in contents:
         if isinstance(parte, str):
@@ -1487,6 +1488,9 @@ def _contents_para_openai(contents: list, schema: dict) -> list:
                    "Responda em JSON, um unico objeto, seguindo exatamente este "
                    "schema:" + chr(10) + _json.dumps(schema, ensure_ascii=False) +
                    chr(10) + "Nada de texto fora do JSON."})
+    # Ver `_Etapas`: a serializacao (base64 da imagem) e a outra metade da
+    # "montagem da chamada", ao lado da conversao feita em `_para_envio`.
+    _CUSTO_DE_MONTAGEM["pedido"] += time.monotonic() - _t0
     return blocos
 
 
@@ -1556,6 +1560,24 @@ def _e_recusa_do_segundo(resposta: dict) -> bool:
 _ULTIMA_CHAMADA = {"provedor": "", "segundos": 0.0}
 
 
+# Qual estratégia de captura funcionou NESTE captcha, e quanto custou montar a
+# chamada. Zerados por `_novo_captcha` e `_comecar_rodada`.
+#
+# 21/09/2026, medido em produção com o detalhe de etapas: a rodada de imagem
+# gastava 8 s só para capturar a imagem, TODA rodada. A causa estava na cascata:
+# oito seletores de <img> com 800 ms de espera cada, antes de cair na estratégia
+# que de fato funciona hoje (recorte por medida da tela, porque a imagem do
+# desafio é fundo CSS e não existe <img> nenhum). Oito segundos, todas as vezes,
+# para redescobrir a mesma coisa.
+_ESTRATEGIA_DA_CAPTURA: dict[str, str | None] = {"qual": None}
+_CUSTO_DE_MONTAGEM = {"imagem": 0.0, "pedido": 0.0}
+
+# Espera por seletor na cascata de captura. Era 800 ms — oito seletores davam
+# 6,4 s de espera garantida quando nenhum casa. O seletor que EXISTE responde
+# em milissegundos; o que não existe só consome o teto.
+TIMEOUT_SELETOR_IMAGEM_MS = 200
+
+
 class _Etapas:
     """Onde vao os segundos de uma rodada antes de o provedor responder.
 
@@ -1580,7 +1602,11 @@ class _Etapas:
                 # A chamada inteira menos o que o provedor levou = o nosso lado:
                 # conversao da imagem, montagem do pedido, cliente.
                 segundos = max(0.0, segundos - _ULTIMA_CHAMADA["segundos"])
-                nome = "montagem da chamada"
+                detalhe = ", ".join(
+                    f"{parte} {custo:.1f}s"
+                    for parte, custo in _CUSTO_DE_MONTAGEM.items() if custo >= 0.05)
+                nome = ("montagem da chamada" if not detalhe
+                        else f"montagem da chamada ({detalhe})")
             pedacos.append(f"{nome} {segundos:.1f}s")
         return "preparo: " + ", ".join(pedacos) if pedacos else ""
 
@@ -1588,6 +1614,7 @@ class _Etapas:
 def _comecar_rodada() -> float:
     """Zera o registro da última chamada e devolve o instante do início."""
     _ULTIMA_CHAMADA.update(provedor="", segundos=0.0)
+    _CUSTO_DE_MONTAGEM.update(imagem=0.0, pedido=0.0)
     return time.monotonic()
 
 
@@ -1718,6 +1745,7 @@ _GEMINI_FALHOU_EM: dict[str, float] = {}
 def _novo_captcha() -> None:
     """Início de um captcha: a memória DESTE captcha começa limpa."""
     _GEMINI_FALHOU_NESTE_CAPTCHA["sim"] = False
+    _ESTRATEGIA_DA_CAPTURA["qual"] = None
 
 
 def _marcar_gemini_nao_fechou(tag: str) -> None:
@@ -2895,27 +2923,31 @@ def _get_task_image_screenshot_and_bbox(
             "height": box["height"],
         }
 
+    lembrada = _ESTRATEGIA_DA_CAPTURA["qual"]
+
     # Estratégia 1: seletores CSS conhecidos
-    for sel in [
+    for sel in [] if lembrada not in (None, "css") else [
         ".task-image img", "img.task-image",
         ".challenge-image img", "img.challenge-image",
         ".task img", ".challenge-container img",
         "img[src*='hcaptcha']", "img[src*='hmt-']",
     ]:
         try:
-            img_box = frame.locator(sel).first.bounding_box(timeout=800)
+            img_box = frame.locator(sel).first.bounding_box(
+                timeout=TIMEOUT_SELETOR_IMAGEM_MS)
             if not img_box or img_box["width"] < 80 or img_box["height"] < 80:
                 continue
             png = cf_fl.locator(sel).first.screenshot()
             if png:
                 print(f"    [captcha/imagem] Via CSS '{sel}': {img_box['width']:.0f}x{img_box['height']:.0f}px")
+                _ESTRATEGIA_DA_CAPTURA["qual"] = "css"
                 return png, build_page_bbox(img_box)
         except Exception:
             continue
 
     # Estratégia 2: JS — maior <img> com área >= 150x150
     try:
-        js_img = frame.evaluate("""() => {
+        js_img = None if lembrada not in (None, "js") else frame.evaluate("""() => {
             const imgs = [...document.querySelectorAll('img')];
             let best = null, bestArea = 0;
             for (let i = 0; i < imgs.length; i++) {
@@ -2933,6 +2965,7 @@ def _get_task_image_screenshot_and_bbox(
             png = cf_fl.locator("img").nth(js_img["index"]).screenshot()
             if png:
                 print(f"    [captcha/imagem] Via JS img[{js_img['index']}]: {img_box['width']:.0f}x{img_box['height']:.0f}px")
+                _ESTRATEGIA_DA_CAPTURA["qual"] = "js"
                 return png, build_page_bbox(img_box)
     except Exception as e:
         print(f"    [captcha/imagem] JS img fallback: {type(e).__name__}")
@@ -2962,10 +2995,14 @@ def _get_task_image_screenshot_and_bbox(
             page_bbox = build_page_bbox(bounds)
             png = page.screenshot(clip=page_bbox)
             if png:
+                _ESTRATEGIA_DA_CAPTURA["qual"] = "dom"
                 return png, page_bbox
     except Exception as e:
         print(f"    [captcha/imagem] DOM bounds falhou: {type(e).__name__}")
 
+    # Nada funcionou: a lembrança perde a validade, e a próxima rodada volta a
+    # tentar a cascata inteira.
+    _ESTRATEGIA_DA_CAPTURA["qual"] = None
     return None, None
 
 
@@ -3157,16 +3194,22 @@ def _para_envio(img: bytes, max_dim: int = 900) -> tuple[bytes, str]:
     conversao, e ai o que sobe e o PNG original — declarar "image/jpeg" para
     bytes de PNG quebraria a chamada.
     """
-    img = _shrink_png(img, max_dim=max_dim)
-    if not _PIL or not img:
-        return img, "image/png"
+    _t0 = time.monotonic()
     try:
-        foto = Image.open(io.BytesIO(img)).convert("RGB")
-        buf = io.BytesIO()
-        foto.save(buf, format="JPEG", quality=QUALIDADE_JPEG, optimize=True)
-        return buf.getvalue(), "image/jpeg"
-    except Exception:
-        return img, "image/png"
+        img = _shrink_png(img, max_dim=max_dim)
+        if not _PIL or not img:
+            return img, "image/png"
+        try:
+            foto = Image.open(io.BytesIO(img)).convert("RGB")
+            buf = io.BytesIO()
+            foto.save(buf, format="JPEG", quality=QUALIDADE_JPEG, optimize=True)
+            return buf.getvalue(), "image/jpeg"
+        except Exception:
+            return img, "image/png"
+    finally:
+        # Ver `_Etapas`: em 21/09/2026 a "montagem da chamada" chegou a 13 s e o
+        # log não dizia se era a conversão da imagem ou a serialização do pedido.
+        _CUSTO_DE_MONTAGEM["imagem"] += time.monotonic() - _t0
 
 
 def _parte_imagem(img: bytes, max_dim: int = 900):

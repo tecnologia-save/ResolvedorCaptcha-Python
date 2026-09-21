@@ -40,12 +40,18 @@ def _cliente(comportamento):
 
 # ── Timeout explicito ────────────────────────────────────────────────────────
 
-def test_timeout_padrao_e_de_20_segundos():
+def test_timeout_padrao_e_de_25_segundos():
     # Era 30s ate 67ac1f8 ("teto de 20s por chamada"), que mexeu no solver e
     # deixou este teste para tras. O numero segue fixado a mao de proposito: e
     # ele que multiplica pelo numero de modelos no pior caso, entao mudar o teto
     # tem de doer aqui.
-    assert solver.GEMINI_TIMEOUT_MS == 20_000
+    #
+    # 20s -> 25s em 18/09/2026 (830acf4, Matheus: "folga p/ redes lentas"). O
+    # commit mexeu no solver e deixou este teste e o do pior caso para tras —
+    # ajustados aqui, com o efeito dito por extenso: o pior caso subiu de 60s
+    # para 75s. Este teto e o PADRAO; grade, imagem e bola tem o seu proprio em
+    # `TETO_POR_TIPO_MS`, entao ele so vale para tipo sem entrada la.
+    assert solver.GEMINI_TIMEOUT_MS == 25_000
 
 
 def test_config_carrega_o_timeout_em_milissegundos():
@@ -234,8 +240,11 @@ def test_o_sdk_nao_faz_retry_por_conta_propria():
 
 
 def test_pior_caso_de_tempo_e_um_timeout_por_modelo():
-    """Tres modelos x uma tentativa x 20s = 60s, e nao minutos."""
-    assert len(solver.GEMINI_MODELS) * solver.GEMINI_TIMEOUT_MS == 60_000
+    """Tres modelos x uma tentativa x 25s = 75s, e nao minutos.
+
+    Eram 60s ate 18/09/2026, quando o teto padrao subiu de 20s para 25s.
+    """
+    assert len(solver.GEMINI_MODELS) * solver.GEMINI_TIMEOUT_MS == 75_000
 
 
 # Modelos reprovados por MEDICAO — nao voltam ao caminho quente sem nova medida.

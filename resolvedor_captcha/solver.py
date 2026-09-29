@@ -3519,6 +3519,49 @@ def _alternar_provedor(rnd: int) -> int | None:
     return None if rnd % 2 == 1 else 99
 
 
+# Enunciados da familia "figura diferente" — a unica que o prompt fixo servia.
+#
+# Casados por trecho curto, como as outras marcas do modulo: a redacao muda
+# ("a figura diferente", "o icone que quebra o padrao", "a que nao pertence") e
+# o nucleo sobrevive.
+MARCAS_FIGURA_DIFERENTE = (
+    "diferente", "destoa", "quebra o padrão", "quebra o padrao",
+    "não pertence", "nao pertence", "fora do padrão", "fora do padrao",
+)
+
+
+def _pede_a_figura_diferente(instrucao_limpa: str) -> bool:
+    """O enunciado e da familia 'ache a que destoa'?"""
+    t = (instrucao_limpa or "").lower()
+    return any(m in t for m in MARCAS_FIGURA_DIFERENTE)
+
+
+def _tarefa_do_pixel(instrucao_limpa: str) -> str:
+    """O que pedir ao modelo: o ENUNCIADO, quando ele diz o criterio.
+
+    29/09/2026, captcha novo trazido pelo Jean: "Clique no caractere
+    parcialmente coberto por uma linha", com quatro bichos sobre um fundo
+    quadriculado. O prompt mandava, logo depois de citar o enunciado, "compare
+    as figuras ENTRE SI e escolha a que destoa das demais" — e entre tigre,
+    capivara, polvo e ovelha nenhuma destoa. O criterio estava na tela e na
+    instrucao; o modelo recebia ordem de ignorar os dois e resolver outro
+    problema.
+
+    A tarefa fixa nasceu medida contra as amostras de "figura diferente"
+    (09/09/2026, pixel direto acertando onde a malha errava), e continua valendo
+    para ELAS. O que muda e deixar de aplica-la a enunciados que pedem outra
+    coisa.
+
+    Enunciado ilegivel mantem o comportamento antigo: sem texto nao ha criterio,
+    e "a que destoa" e o palpite que ja foi medido.
+    """
+    if instrucao_limpa and not _pede_a_figura_diferente(instrucao_limpa):
+        return (f'Faça exatamente o que o enunciado pede: "{instrucao_limpa}". '
+                f"O critério está no enunciado — não procure a figura "
+                f"\"diferente\" a menos que seja isso que ele peça.")
+    return ("Compare as figuras ENTRE SI e escolha a que destoa das demais.")
+
+
 def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
                   politica: PoliticaLatencia | None = None, rodizio: int = 0,
                   rodizio_segundo_provedor: int | None = None) -> dict:
@@ -3540,11 +3583,12 @@ def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
     verdade, entao a malha nao inventa nada.
     """
     largura, altura = _dimensoes_png(png)
+    limpa = _limpar_texto(instrucao)
     prompt = (
-        f'Instrução do captcha: "{_limpar_texto(instrucao)}". '
-        f"A imagem tem {largura}x{altura} pixels. Compare as figuras ENTRE SI "
-        f"e escolha a que destoa das demais. "
-        f"Responda o CENTRO dela em pixels da imagem: x de 0 a {largura - 1}, "
+        f'Instrução do captcha: "{limpa}". '
+        f"A imagem tem {largura}x{altura} pixels. {_tarefa_do_pixel(limpa)} "
+        f"Responda o CENTRO da figura escolhida em pixels da imagem: "
+        f"x de 0 a {largura - 1}, "
         f"y de 0 a {altura - 1}, com 0,0 no canto superior esquerdo. "
         f"Um ponto só — o enunciado pede um clique."
     )

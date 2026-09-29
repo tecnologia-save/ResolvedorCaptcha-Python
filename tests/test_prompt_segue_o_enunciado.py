@@ -90,3 +90,41 @@ def test_o_formato_da_resposta_nao_mudou(monkeypatch):
         assert "x de 0 a 399" in p and "y de 0 a 299" in p
         assert "0,0 no canto superior esquerdo" in p
         assert "Um ponto só" in p
+
+
+# ══ 4 · O clique tem de cair SOBRE uma figura ═══════════════════════════════
+#
+# 30/09/2026, segunda amostra do mesmo captcha: o clique caiu no fundo, entre o
+# polvo e a ovelha, duas vezes. Não foi a figura errada — foi nenhuma figura.
+
+@pytest.mark.parametrize("instrucao", [COBERTO, DIFERENTE, ""])
+def test_o_prompt_proibe_responder_o_fundo(monkeypatch, instrucao):
+    """Vale para toda a família, não só para o enunciado novo."""
+    p = _prompt(monkeypatch, instrucao)
+    assert "nunca um ponto do fundo" in p
+    assert "nunca o espaço entre duas figuras" in p
+
+
+def test_o_prompt_manda_listar_antes_de_apontar(monkeypatch):
+    """Enumerar foi o que levou o desafio da bola a 3/3, com eliminação."""
+    p = _prompt(monkeypatch, COBERTO)
+    assert "liste mentalmente as figuras" in p
+
+
+def test_sem_figura_obvia_ainda_aponta_para_uma(monkeypatch):
+    """A saída não pode ser desistir no fundo: aponta e marca confiança baixa."""
+    p = _prompt(monkeypatch, COBERTO)
+    assert "confidence baixa" in p
+
+
+# ══ 5 · O esquema não pode contradizer o enunciado ══════════════════════════
+
+def test_o_esquema_nao_embute_a_tarefa_de_uma_familia_so():
+    """O esquema vai junto no structured output.
+
+    Corrigi o prompt na 1.45.0 e deixei "por que ela destoa" aqui: o modelo
+    recebia a instrução certa com a tarefa antiga ao lado, por outro caminho.
+    """
+    descricao = solver.ESQUEMA_PIXEL["properties"]["description"]["description"]
+    assert "destoa" not in descricao
+    assert "enunciado" in descricao

@@ -3442,7 +3442,12 @@ ESQUEMA_PIXEL = {
     "properties": {
         "x": {"type": "integer", "description": "Coluna do pixel, 0 = borda esquerda."},
         "y": {"type": "integer", "description": "Linha do pixel, 0 = borda de cima."},
-        "description": {"type": "string", "description": "Que figura e essa, e por que ela destoa."},
+        # 30/09/2026: dizia "por que ela destoa". O prompt passou a obedecer ao
+        # enunciado na 1.45.0 e ESTE campo ficou para tras, mandando a tarefa
+        # antiga por outro caminho — o esquema vai junto no structured output, e
+        # o modelo lia a instrucao certa com a contradicao ao lado.
+        "description": {"type": "string",
+                        "description": "Que figura e essa, e por que ela atende ao enunciado."},
         "confidence": {"type": "string", "enum": ["high", "medium", "low"]},
     },
     "required": ["x", "y", "confidence"],
@@ -3562,6 +3567,26 @@ def _tarefa_do_pixel(instrucao_limpa: str) -> str:
     return ("Compare as figuras ENTRE SI e escolha a que destoa das demais.")
 
 
+# Onde o clique PODE cair. Vale para qualquer enunciado desta família.
+#
+# 30/09/2026, segunda amostra do "caractere coberto por uma linha" trazida pelo
+# Jean: o clique caiu no fundo, entre o polvo e a ovelha, duas vezes. Não foi
+# figura errada — foi nenhuma figura. O prompt dizia o que procurar e nunca
+# dizia onde a resposta pode estar, e "responda o centro dela" pressupõe um
+# "dela" que o modelo pode não ter escolhido.
+#
+# Enumerar antes de apontar é a outra metade: foi o que fez o desafio da bola
+# sair de errado para 3/3, com o prompt de eliminação. Listar obriga a decidir
+# entre candidatos concretos em vez de responder uma coordenada plausível.
+_ONDE_O_CLIQUE_CAI = (
+    "Antes de responder, liste mentalmente as figuras que existem na imagem. "
+    "A resposta é SEMPRE o centro de UMA dessas figuras — nunca um ponto do "
+    "fundo, nunca o espaço entre duas figuras. Se nenhuma parecer atender ao "
+    "critério, escolha a mais provável e marque confidence baixa, mas aponte "
+    "para uma figura."
+)
+
+
 def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
                   politica: PoliticaLatencia | None = None, rodizio: int = 0,
                   rodizio_segundo_provedor: int | None = None) -> dict:
@@ -3587,6 +3612,7 @@ def _gemini_pixel(png: bytes, instrucao: str, api_key: str,
     prompt = (
         f'Instrução do captcha: "{limpa}". '
         f"A imagem tem {largura}x{altura} pixels. {_tarefa_do_pixel(limpa)} "
+        f"{_ONDE_O_CLIQUE_CAI} "
         f"Responda o CENTRO da figura escolhida em pixels da imagem: "
         f"x de 0 a {largura - 1}, "
         f"y de 0 a {altura - 1}, com 0,0 no canto superior esquerdo. "
